@@ -50,6 +50,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/version.h>
+#include <linux/filter.h>
+
 
 #ifdef HAVE_WRITEV
 #define USE_BUFFERED_NETIO
@@ -116,12 +118,26 @@ network_socket_new()
 }
 
 void
+network_socket_send_quit_and_free(network_socket *s)
+{
+    int len = NET_HEADER_SIZE + 1;
+    GString *new_packet = g_string_sized_new(len);
+    new_packet->len = NET_HEADER_SIZE;
+    g_string_append_c(new_packet, (char)COM_QUIT);
+    network_mysqld_proto_set_packet_id(new_packet, 0);
+    network_mysqld_proto_set_packet_len(new_packet, 1);
+    g_queue_push_tail(s->send_queue->chunks, new_packet);
+
+    network_socket_write(s, -1);
+
+    network_socket_free(s);
+}
+
+void
 network_socket_free(network_socket *s)
 {
     if (!s)
         return;
-
-    g_debug("%s: network_socket_free:%p", G_STRLOC, s);
 
     if (s->last_compressed_packet) {
         g_string_free(s->last_compressed_packet, TRUE);
@@ -374,6 +390,29 @@ network_socket_connect(network_socket *sock)
     return NETWORK_SOCKET_SUCCESS;
 }
 
+#if defined(SO_REUSEPORT)
+#ifdef BPF_ENABLED
+static void attach_bpf(int fd) 
+{
+    struct sock_filter code[] = {
+        /* A = raw_smp_processor_id() */
+        { BPF_LD  | BPF_W | BPF_ABS, 0, 0, SKF_AD_OFF + SKF_AD_CPU },
+        /* return A */
+        { BPF_RET | BPF_A, 0, 0, 0 },
+    };
+    struct sock_fprog p = {
+        .len = 2,
+        .filter = code,
+    };
+
+    if (setsockopt(fd, SOL_SOCKET, SO_ATTACH_REUSEPORT_CBPF, &p, sizeof(p))) {
+        g_critical("%s:failed to set SO_ATTACH_REUSEPORT_CBPF, err:%s",
+                G_STRLOC, strerror(errno));
+    }
+}
+#endif
+#endif
+
 /**
  * connect a socket
  *
@@ -385,7 +424,7 @@ network_socket_connect(network_socket *sock)
  * @see network_address_set_address()
  */
 network_socket_retval_t
-network_socket_bind(network_socket *con)
+network_socket_bind(network_socket *con,  int advanced_mode)
 {
     /* 
      * HPUX:       int setsockopt(int s, int level, int optname, 
@@ -423,6 +462,21 @@ network_socket_bind(network_socket *con)
                            G_STRLOC, con->dst->name->str, g_strerror(errno), errno);
                 return NETWORK_SOCKET_ERROR;
             }
+
+#if defined(SO_REUSEPORT)
+            if (advanced_mode) {
+                g_message("%s:set SO_REUSEPORT for fd:%d", G_STRLOC, con->fd);
+                if (0 != setsockopt(con->fd, SOL_SOCKET, SO_REUSEPORT, SETSOCKOPT_OPTVAL_CAST & val, sizeof(val))) {
+                    g_critical("%s: setsockopt(%s, SOL_SOCKET, SO_REUSEPORT) failed: %s (%d)",
+                            G_STRLOC, con->dst->name->str, g_strerror(errno), errno);
+                    return NETWORK_SOCKET_ERROR;
+                }
+
+#ifdef BPF_ENABLED
+                attach_bpf(con->fd);
+#endif
+            }
+#endif
         }
 
         if (con->dst->addr.common.sa_family == AF_INET6) {

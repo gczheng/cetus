@@ -778,8 +778,6 @@ network_mysqld_proto_get_query_result(network_packet *packet, network_mysqld_con
         is_finished = 1;
         break;
     default:
-        g_debug_hexdump(G_STRLOC, S(packet->data));
-        g_message("%s: COM_(0x%02x) is not handled", G_STRLOC, con->parse.command);
         err = 1;
         break;
     }
@@ -1162,7 +1160,7 @@ network_mysqld_auth_challenge_set_challenge(network_mysqld_auth_challenge *shake
 int network_mysqld_proto_append_auth_switch(GString *packet, char *method_name, GString *salt)
 {
     network_mysqld_proto_append_int8(packet, 0xfe);
-    /*TODO: different algorithm for methods */
+    /*TODO: different algorithms for methods */
     g_string_append_len(packet, method_name, strlen(method_name));
     g_string_append_c(packet, 0);
     g_string_append_len(packet, salt->str, salt->len);

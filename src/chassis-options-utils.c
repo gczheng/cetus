@@ -257,19 +257,6 @@ show_log_backtrace_on_crash(gpointer param) {
     return NULL;
 }
 
-gchar*
-show_keepalive(gpointer param) {
-    struct external_param *opt_param = (struct external_param *)param;
-    chassis *srv = opt_param->chas;
-    gint opt_type = opt_param->opt_type;
-    if (CAN_SHOW_OPTS_PROPERTY(opt_type)) {
-        return g_strdup_printf("%s", srv->auto_restart ? "true":"false");
-    }
-    if (CAN_SAVE_OPTS_PROPERTY(opt_type)) {
-        return srv->auto_restart ? g_strdup("true"):NULL;
-    }
-    return NULL;
-}
 
 gchar*
 show_max_open_files(gpointer param) {
@@ -397,6 +384,42 @@ assign_default_db(const gchar *newval, gpointer param) {
 }
 
 gchar*
+show_ifname(gpointer param) {
+    struct external_param *opt_param = (struct external_param *)param;
+    chassis *srv = opt_param->chas;
+    gint opt_type = opt_param->opt_type;
+    if (CAN_SHOW_OPTS_PROPERTY(opt_type)) {
+        return g_strdup_printf("%s", srv->ifname != NULL ? srv->ifname : "NULL");
+    }
+    if (CAN_SAVE_OPTS_PROPERTY(opt_type)) {
+        if (srv->ifname) {
+            return g_strdup_printf("%s", srv->ifname);
+        }
+    }
+    return NULL;
+}
+
+gint
+assign_ifname(const gchar *newval, gpointer param) {
+    gint ret = ASSIGN_ERROR;
+    struct external_param *opt_param = (struct external_param *)param;
+    chassis *srv = opt_param->chas;
+    gint opt_type = opt_param->opt_type;
+    if (CAN_ASSIGN_OPTS_PROPERTY(opt_type)) {
+        if (NULL != newval) {
+            if (srv->ifname) {
+                g_free(srv->ifname);
+            }
+            srv->ifname = g_strdup(newval);
+            ret = ASSIGN_OK;
+        } else {
+            ret = ASSIGN_VALUE_INVALID;
+        }
+    }
+    return ret;
+}
+
+gchar*
 show_default_pool_size(gpointer param) {
     struct external_param *opt_param = (struct external_param *)param;
     chassis *srv = opt_param->chas;
@@ -463,7 +486,7 @@ show_max_pool_size(gpointer param) {
         if (srv->mid_idle_connections * 2 == srv->max_idle_connections) {
             return NULL;
         }
-            return g_strdup_printf("%d", srv->max_idle_connections);
+        return g_strdup_printf("%d", srv->max_idle_connections);
     }
     return NULL;
 }
@@ -504,18 +527,60 @@ assign_max_pool_size(const gchar *newval, gpointer param) {
 }
 
 gchar*
+show_worker_processes(gpointer param) {
+    struct external_param *opt_param = (struct external_param *)param;
+    chassis *srv = opt_param->chas;
+    gint opt_type = opt_param->opt_type;
+    if (CAN_SHOW_OPTS_PROPERTY(opt_type)) {
+        return g_strdup_printf("%d", srv->worker_processes);
+    }
+    if (CAN_SAVE_OPTS_PROPERTY(opt_type)) {
+        return g_strdup_printf("%d", srv->worker_processes);
+    }
+    return NULL;
+}
+
+gint
+assign_worker_processes(const gchar *newval, gpointer param) {
+    gint ret = ASSIGN_ERROR;
+    struct external_param *opt_param = (struct external_param *)param;
+    chassis *srv = opt_param->chas;
+    gint opt_type = opt_param->opt_type;
+    if (CAN_ASSIGN_OPTS_PROPERTY(opt_type)) {
+        if (NULL != newval) {
+            gint value = 0;
+            if (try_get_int_value(newval, &value)) {
+                if (value <= 0) {
+                    srv->worker_processes = 1;
+                } else if (value > MAX_WORK_PROCESSES) {
+                    srv->worker_processes = MAX_WORK_PROCESSES;
+                } else {
+                    srv->worker_processes = value;
+                }
+                ret = ASSIGN_OK;
+            } else {
+                ret = ASSIGN_VALUE_INVALID;
+            }
+        } else {
+            ret = ASSIGN_VALUE_INVALID;
+        }
+    }
+    return ret;
+}
+
+gchar*
 show_max_resp_len(gpointer param) {
     struct external_param *opt_param = (struct external_param *)param;
     chassis *srv = opt_param->chas;
     gint opt_type = opt_param->opt_type;
     if (CAN_SHOW_OPTS_PROPERTY(opt_type)) {
-        return g_strdup_printf("%d", srv->max_resp_len);
+        return g_strdup_printf("%lld", srv->max_resp_len);
     }
     if (CAN_SAVE_OPTS_PROPERTY(opt_type)) {
         if (10 * 1024 * 1024 == srv->max_resp_len) {
             return NULL;
         }
-        return g_strdup_printf("%d", srv->max_resp_len);
+        return g_strdup_printf("%lld", srv->max_resp_len);
     }
     return NULL;
 }
@@ -679,6 +744,7 @@ assign_max_header_size(const gchar *newval, gpointer param) {
     return ret;
 }
 
+#ifndef SIMPLE_PARSER
 gchar*
 show_worker_id(gpointer param) {
     struct external_param *opt_param = (struct external_param *)param;
@@ -692,6 +758,7 @@ show_worker_id(gpointer param) {
     }
     return NULL;
 }
+#endif
 
 gchar*
 show_disable_threads(gpointer param) {
@@ -1457,33 +1524,18 @@ show_check_dns(gpointer param) {
         return g_strdup_printf("%s", srv->check_dns ? "true" : "false");
     }
     if (CAN_SAVE_OPTS_PROPERTY(opt_type)) {
-        return (srv->check_dns == 0) ? g_strdup("false") : NULL;
+        return srv->check_dns ? g_strdup("true") : NULL;
     }
     return NULL;
 }
 
-gint
-assign_check_dns(const gchar *newval, gpointer param) {
-    gint ret = ASSIGN_ERROR;
+gchar*
+show_ssl(gpointer param) {
     struct external_param *opt_param = (struct external_param *)param;
     chassis *srv = opt_param->chas;
     gint opt_type = opt_param->opt_type;
-    if (CAN_ASSIGN_OPTS_PROPERTY(opt_type)) {
-        if (NULL != newval) {
-            gint value = 0;
-            if (try_get_int_value(newval, &value)) {
-                if (value < 0) {
-                    ret = ASSIGN_VALUE_INVALID;
-                } else {
-                    srv->check_dns = value;
-                    ret = ASSIGN_OK;
-                }
-            } else {
-                ret = ASSIGN_VALUE_INVALID;
-            }
-        } else {
-            ret = ASSIGN_VALUE_INVALID;
-        }
+    if (CAN_SHOW_OPTS_PROPERTY(opt_type) || CAN_SAVE_OPTS_PROPERTY(opt_type)) {
+        return g_strdup_printf("%s", srv->ssl ? "true" : "false");
     }
-    return ret;
+    return NULL;
 }

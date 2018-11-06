@@ -128,98 +128,55 @@ cetus_str_hash(const unsigned char *key)
     }
 }
 
-static GString *
-sql_modify_limit(sql_select_t *select)
+static void
+prepare_for_sql_modify_limit(sql_select_t *select, guint64 *orig_limit, guint64 *orig_offset)
 {
-    GString *new_sql = NULL;
-    if (select->offset && select->offset->num_value > 0 && select->limit) { /* TODO: +ddd */
-        guint64 limit_bak = 0;
-        guint64 offset_bak = 0;
-        if (select->offset && select->offset->op == TK_INTEGER) {
-            offset_bak = select->offset->num_value;
-            select->offset->num_value = 0;
-        }
-        if (select->limit->op == TK_INTEGER) {
-            limit_bak = select->limit->num_value;
-            select->limit->num_value += offset_bak;
-        }
-        new_sql = sql_construct_select(select);
-        g_string_append_c(new_sql, ';');
-        select->limit->num_value = limit_bak;
-        if (select->offset)
-            select->offset->num_value = offset_bak;
+    if (select->offset && select->offset->op == TK_INTEGER) {
+        *orig_offset = select->offset->num_value;
+        select->offset->num_value = 0;
     }
-    /* union statement */
-    if (new_sql && select->prior) {
-        select = select->prior;
-        GString *union_sql = g_string_new(NULL);
-        while (select) {
-            GString *sql = sql_construct_select(select);
-            g_string_append(union_sql, sql->str);
-            g_string_append(union_sql, " UNION ");
-            g_string_free(sql, TRUE);
-            select = select->prior;
-        }
-        g_string_append(union_sql, new_sql->str);
-        g_string_free(new_sql, TRUE);
-        return union_sql;
-    } else {
-        return new_sql;
+    if (select->limit->op == TK_INTEGER) {
+        *orig_limit = select->limit->num_value;
+        select->limit->num_value += *orig_offset;
     }
 }
 
-static GString *
-sql_modify_orderby(sql_select_t *select)
+static void
+prepare_for_sql_modify_orderby(sql_select_t *select)
 {
-    GString *new_sql = NULL;
-    if (select->flags & SF_REWRITE_ORDERBY) {
-        sql_expr_list_t *columns = select->columns;
-        sql_column_list_t *orderby = NULL;
-        int i = 0;
-        if (select->orderby_clause) {
-            orderby = select->orderby_clause;
-        }
-        for (i = 0; i < columns->len; ++i) {
-            sql_expr_t *mcol = g_ptr_array_index(columns, i);
-            if (!(mcol->flags & EP_ORDER_BY)) {
+    sql_expr_list_t *columns = select->columns;
+    sql_column_list_t *orderby = NULL;
+    int i = 0;
+    if (select->orderby_clause) {
+        orderby = select->orderby_clause;
+    }
+    for (i = 0; i < columns->len; ++i) {
+        sql_expr_t *mcol = g_ptr_array_index(columns, i);
+        if (!(mcol->flags & EP_ORDER_BY)) {
+            if (mcol->op != TK_FUNCTION) {
                 sql_column_t *ordcol = sql_column_new();
                 ordcol->expr = sql_expr_dup(mcol);
                 orderby = sql_column_list_append(orderby, ordcol);
             }
         }
-        select->orderby_clause = orderby;
-        new_sql = sql_construct_select(select);
-        g_string_append_c(new_sql, ';');
     }
-    /* union statement */
-    if (new_sql && select->prior) {
-        select = select->prior;
-        GString *union_sql = g_string_new(NULL);
-        while (select) {
-            GString *sql = sql_construct_select(select);
-            g_string_append(union_sql, sql->str);
-            g_string_append(union_sql, " UNION ");
-            g_string_free(sql, TRUE);
-            select = select->prior;
-        }
-        g_string_append(union_sql, new_sql->str);
-        g_string_free(new_sql, TRUE);
-        return union_sql;
-    } else {
-        return new_sql;
-    }
+    select->orderby_clause = orderby;
 }
 
 GString *
 sharding_modify_sql(sql_context_t *context, having_condition_t *hav_condi)
 {
-    /* TODO: sql rewrite priority */
     if (context->stmt_type == STMT_SELECT && context->sql_statement) {
         sql_select_t *select = context->sql_statement;
 
         sql_expr_t *having = select->having_clause;
         if (having) {
             if (is_compare_op(having->op)) {
+                sql_expr_t* hav_name = having->left;
+                hav_condi->column_index =
+                    sql_expr_list_find_exact_aggregate(select->columns,
+                                                 hav_name->start,
+                                                 hav_name->end - hav_name->start);
                 hav_condi->rel_type = having->op;
                 sql_expr_t *val = having->right;
                 if (hav_condi->condition_value) {
@@ -238,25 +195,58 @@ sharding_modify_sql(sql_context_t *context, having_condition_t *hav_condi)
             }
             select->having_clause = NULL;   /* temporarily remove HAVING */
         }
-        gboolean has_function = FALSE;
-        GString *modified_sql = NULL;
+
+        gboolean need_reconstruct = FALSE;
+        guint64 orig_offset = 0;
+        guint64 orig_limit = 0;
 
         /* (LIMIT a, b) ==> (LIMIT 0, a+b) */
-        if (modified_sql == NULL && !has_function) {
-            modified_sql = sql_modify_limit(select);
+        if (select->offset && select->offset->num_value > 0 && select->limit) {
+            prepare_for_sql_modify_limit(select, &orig_limit, &orig_offset);
+            need_reconstruct = TRUE;
         }
 
-        /* select DISTINCT x,y,z ==> select DISTINCT x,y,z ORDER BY x,y,z */
-        if (modified_sql == NULL) {
-            modified_sql = sql_modify_orderby(select);
+        if (select->groupby_clause != NULL && select->orderby_clause == NULL) {
+            select->flags |= SF_REWRITE_ORDERBY;
         }
 
-        if (modified_sql == NULL && having) {
-            modified_sql = sql_construct_select(select);
+        if (select->flags & SF_REWRITE_ORDERBY) {
+            prepare_for_sql_modify_orderby(select);
+            need_reconstruct = TRUE;
         }
+
+        GString *new_sql = NULL;
+        if (having) {
+            need_reconstruct = TRUE;
+        }
+
+        if (need_reconstruct) {
+            new_sql = sql_construct_select(select);
+            g_string_append_c(new_sql, ';');
+            if (orig_offset != 0 || orig_limit != 0) {
+                select->limit->num_value = orig_limit;
+                select->offset->num_value = orig_offset;
+            }
+        }
+
+        if (new_sql && select->prior) {
+            sql_select_t *sub_select = select->prior;
+            GString *union_sql = g_string_new(NULL);
+            while (sub_select) {
+                GString *sql = sql_construct_select(sub_select);
+                g_string_append(union_sql, sql->str);
+                g_string_append(union_sql, " UNION ");
+                g_string_free(sql, TRUE);
+                sub_select = sub_select->prior;
+            }
+            g_string_append(union_sql, new_sql->str);
+            g_string_free(new_sql, TRUE);
+            new_sql = union_sql;
+        }
+
         select->having_clause = having; /* get HAVING back */
 
-        return modified_sql;
+        return new_sql;
     }
     return NULL;
 }
@@ -1590,8 +1580,9 @@ sharding_parse_groups(GString *default_db, sql_context_t *context, query_stats_t
     case STMT_ROLLBACK:
         g_ptr_array_free(groups, TRUE);
         return USE_PREVIOUS_TRAN_CONNS;
-    case STMT_COMMON_DDL:      /* ddl without comments sent to all */
     case STMT_CALL:
+        return rc;
+    case STMT_COMMON_DDL:      /* ddl without comments sent to all */
         shard_conf_get_all_groups(groups);
         sharding_plan_add_groups(plan, groups);
         g_ptr_array_free(groups, TRUE);
@@ -1667,29 +1658,17 @@ select_check_HAVING_column(sql_select_t *select)
     if (!(having && having->left)) {    /* no HAVING is alright */
         return TRUE;
     }
-    gboolean found = FALSE;     /* found having cond in columns */
-    int num_aggregate = 0;
+
     const char *having_func = having->left->token_text;
     if (!having_func) {
         return FALSE;
     }
+
+    /* find having cond in columns */
     sql_expr_list_t *columns = select->columns;
-    int i;
-    for (i = 0; columns && i < columns->len; ++i) {
-        sql_expr_t *col = g_ptr_array_index(columns, i);
-        if (col->op == TK_FUNCTION && sql_func_type(col->token_text) != FT_UNKNOWN) {
-            if (strcasecmp(having_func, col->token_text) == 0) {
-                found = TRUE;
-            }
-            if (col->alias && strcasecmp(having_func, col->alias) == 0) {
-                found = TRUE;
-            }
-            ++num_aggregate;
-        }
-    }
-    if (num_aggregate > 1)      /* if HAVING is used, only 1 aggregate can appear in column */
-        return FALSE;
-    return found;
+    int index = sql_expr_list_find_exact_aggregate(columns, having->left->start,
+                                       having->left->end - having->left->start);
+    return index != -1;
 }
 
 static gboolean
@@ -1737,12 +1716,21 @@ select_groupby_orderby_have_same_column(sql_select_t *select)
     g_assert(select->groupby_clause && select->orderby_clause);
     sql_expr_list_t *grp = select->groupby_clause;
     sql_column_list_t *ord = select->orderby_clause;
-    if (grp->len > 1 || ord->len > 1) { /* only support one col */
+    if (grp->len != ord->len) {
         return FALSE;
     }
-    sql_expr_t *grp_expr = g_ptr_array_index(grp, 0);
-    sql_column_t *ord_col = g_ptr_array_index(ord, 0);
-    return g_strcmp0(ord_col->expr->token_text, grp_expr->token_text) == 0;
+
+    int i;
+
+    for (i = 0; i < grp->len; i++) {
+        sql_expr_t *grp_expr = g_ptr_array_index(grp, i);
+        sql_column_t *ord_col = g_ptr_array_index(ord, i);
+        if (g_strcmp0(ord_col->expr->token_text, grp_expr->token_text) != 0) {
+            return FALSE;
+        }
+    }
+
+    return TRUE;
 }
 
 void
@@ -1767,8 +1755,12 @@ sharding_filter_sql(sql_context_t *context)
             }
             if (!select_check_HAVING_column(select)) {
                 sql_context_set_error(context, PARSE_NOT_SUPPORT,
-                                      "(cetus) HAVING condition must show up in column, "
-                                      "and only 1 aggregate can appear in column when HAVING is used");
+                                      "(cetus) HAVING condition must show up in column");
+                return;
+            }
+            if (select->limit) {
+                sql_context_set_error(context, PARSE_NOT_SUPPORT,
+                                      "(cetus) Only support HAVING condition without limit");
                 return;
             }
         }
@@ -1791,7 +1783,7 @@ sharding_filter_sql(sql_context_t *context)
                 return;
             }
             /* if we can't find simple aggregates, it's inside complex expressions */
-            if (sql_expr_list_find_aggregate(select->columns) == 0) {
+            if (sql_expr_list_find_aggregate(select->columns, NULL) == -1) {
                 sql_context_set_error(context, PARSE_NOT_SUPPORT,
                                       "(cetus) Complex aggregate function not allowed on sharded sql");
                 return;

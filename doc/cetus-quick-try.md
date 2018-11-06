@@ -14,9 +14,26 @@ Cetus只支持linux系统，安装步骤参考[Cetus 安装说明](https://githu
 
 ## 启动
 
+启动cetus之前，要保证配置文件（proxy.conf/shard.conf）的权限最小为660，可以通过以下命令修改权限：
+```
+chmod 660 proxy.conf
+```
+
+### 1. 命令行启动
 ```
 bin/cetus --defaults-file=conf/proxy.conf|shard.conf [--conf-dir＝/home/user/cetus_install/conf/]
 ```
+
+### 2. service命令启动
+
+源码路径下的scripts文件夹中的cetus.service文件提供了启动、关闭cetus的脚本，CentOS系统下的用户可以将其拷贝至系统/etc/init.d/目录下，将其改名为cetus，并将其CETUS_HOME修改成cetus的实际安装路径，同时根据安装的cetus的读写分离版本或是分库版本，修改CETUS_CONF。使用该脚本对cetus操作的命令如下：
+
+```
+service cetus start
+service cetus stop
+service cetus restart
+```
+
 
 ## 连接
 
@@ -93,3 +110,6 @@ create user 'default-user'@'%' identified with mysql_native_password by 'my_pass
 grant all privileges on *.* to 'default-user'@'%';
 ```
 
+## 特别注意
+
+在使用cetus的时候，**不要**将后端MySQL的全局autocommit模式设置为OFF/0。如果需要使用隐式提交，可以在业务端配置该参数，例如在Java客户端的jdbcUrl中配置autoCommit=false。

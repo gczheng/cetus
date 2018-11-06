@@ -83,6 +83,8 @@
 
 #define GETTEXT_PACKAGE "cetus"
 
+extern pid_t       cetus_pid;
+
 /**
  * options of the cetus frontend
  */
@@ -94,12 +96,14 @@ struct chassis_frontend_t {
     int set_client_found_rows;
     int default_pool_size;
     int max_pool_size;
+    int worker_processes;
     int merged_output_size;
     int max_header_size;
-    int max_resp_len;
     int max_alive_time;
     int master_preferred;
+#ifndef SIMPLE_PARSER
     int worker_id;
+#endif
     int config_port;
     int disable_threads;
     int is_tcp_stream_enabled;
@@ -115,12 +119,12 @@ struct chassis_frontend_t {
     int maintained_client_idle_timeout;
     int query_cache_enabled;
     int disable_dns_cache;
+    long long max_resp_len;
     double slave_delay_down_threshold_sec;
     double slave_delay_recover_threshold_sec;
 
     guint invoke_dbg_on_crash;
     /* the --keepalive option isn't available on Unix */
-    guint auto_restart;
     gint max_files_number;
 
     gchar *user;
@@ -145,6 +149,7 @@ struct chassis_frontend_t {
     char *default_username;
     char *default_charset;
     char *default_db;
+    char *ifname;
 
     char *remote_config_url;
 
@@ -158,6 +163,8 @@ struct chassis_frontend_t {
     gchar *sql_log_mode;
     guint sql_log_idletime;
     gint sql_log_maxnum;
+
+    gint ssl;
 
     int check_dns;
 };
@@ -205,6 +212,8 @@ chassis_frontend_new(void)
 
     frontend->check_dns = 0;
 
+    frontend->ssl = 0;
+
     return frontend;
 }
 
@@ -231,6 +240,7 @@ chassis_frontend_free(struct chassis_frontend_t *frontend)
     g_free(frontend->plugin_dir);
     g_free(frontend->default_username);
     g_free(frontend->default_db);
+    g_free(frontend->ifname);
     g_free(frontend->default_charset);
 
     if (frontend->plugin_names) {
@@ -315,12 +325,6 @@ chassis_frontend_set_chassis_options(struct chassis_frontend_t *frontend, chassi
                         NULL, show_log_backtrace_on_crash, SHOW_OPTS_PROPERTY|SAVE_OPTS_PROPERTY);
 
     chassis_options_add(opts,
-                        "keepalive",
-                        0, 0, OPTION_ARG_NONE, &(frontend->auto_restart),
-                        "Try to restart the proxy if it crashed", NULL,
-                        NULL, show_keepalive, SHOW_OPTS_PROPERTY|SAVE_OPTS_PROPERTY);
-
-    chassis_options_add(opts,
                         "max-open-files",
                         0, 0, OPTION_ARG_INT, &(frontend->max_files_number),
                         "Maximum number of open files (ulimit -n)", NULL,
@@ -345,6 +349,12 @@ chassis_frontend_set_chassis_options(struct chassis_frontend_t *frontend, chassi
                         assign_default_db, show_default_db, ALL_OPTS_PROPERTY);
 
     chassis_options_add(opts,
+                        "ifname",
+                        0, 0, OPTION_ARG_STRING, &(frontend->ifname),
+                        "Set the network interface for distinguishing cetus instances", "<string>",
+                        assign_ifname, show_ifname, ALL_OPTS_PROPERTY);
+
+    chassis_options_add(opts,
                         "default-pool-size",
                         0, 0, OPTION_ARG_INT, &(frontend->default_pool_size),
                         "Set the default pool szie for visiting backends", "<integer>",
@@ -357,9 +367,15 @@ chassis_frontend_set_chassis_options(struct chassis_frontend_t *frontend, chassi
                         assign_max_pool_size, show_max_pool_size, ALL_OPTS_PROPERTY);
 
     chassis_options_add(opts,
+                        "worker-processes",
+                        0, 0, OPTION_ARG_INT, &(frontend->worker_processes),
+                        "Set worker processes for processing client requests", "<integer>",
+                        assign_worker_processes, show_worker_processes, ALL_OPTS_PROPERTY);
+
+    chassis_options_add(opts,
                         "max-resp-size",
-                        0, 0, OPTION_ARG_INT, &(frontend->max_resp_len),
-                        "Set the max response size for one backend", "<integer>",
+                        0, 0, OPTION_ARG_INT64, &(frontend->max_resp_len),
+                        "Set the max response size for one backend", "<integer(64)>",
                         assign_max_resp_len, show_max_resp_len, ALL_OPTS_PROPERTY);
 
     chassis_options_add(opts,
@@ -380,11 +396,13 @@ chassis_frontend_set_chassis_options(struct chassis_frontend_t *frontend, chassi
                         "set the max header size for tcp streaming", "<integer>",
                         assign_max_header_size, show_max_header_size, ALL_OPTS_PROPERTY);
 
+#ifndef SIMPLE_PARSER
     chassis_options_add(opts,
                         "worker-id",
                         0, 0, OPTION_ARG_INT, &(frontend->worker_id),
                         "Set the worker id and the maximum value allowed is 63 and the min value is 1", "<integer>",
                         NULL, show_worker_id, SHOW_OPTS_PROPERTY|SAVE_OPTS_PROPERTY);
+#endif
 
     chassis_options_add(opts,
                         "disable-threads",
@@ -393,9 +411,9 @@ chassis_frontend_set_chassis_options(struct chassis_frontend_t *frontend, chassi
 
     chassis_options_add(opts,
                         "ssl",
-                        0, 0, OPTION_ARG_NONE, &(srv->ssl), "Specifies that the server permits but does not require"
+                        0, 0, OPTION_ARG_NONE, &(frontend->ssl), "Specifies that the server permits but does not require"
                         " encrypted connections. This option is disabled by default", NULL,
-                        NULL, NULL, SHOW_OPTS_PROPERTY);
+                        NULL, show_ssl, SHOW_OPTS_PROPERTY|SAVE_OPTS_PROPERTY);
 
     chassis_options_add(opts,
                         "enable-back-compress",
@@ -542,7 +560,7 @@ chassis_frontend_set_chassis_options(struct chassis_frontend_t *frontend, chassi
                           "check-dns",
                           0, 0, OPTION_ARG_NONE, &(frontend->check_dns),
                           "check dns when hostname changed",NULL,
-                          assign_check_dns, show_check_dns, ALL_OPTS_PROPERTY);
+                          NULL, show_check_dns, SHOW_OPTS_PROPERTY|SAVE_OPTS_PROPERTY);
 
     return 0;
 }
@@ -626,12 +644,30 @@ static void
 init_parameters(struct chassis_frontend_t *frontend, chassis *srv)
 {
     srv->default_username = DUP_STRING(frontend->default_username, NULL);
-    srv->default_charset = DUP_STRING(frontend->default_charset, NULL);
+    srv->default_charset = DUP_STRING(frontend->default_charset, "utf8");
     srv->default_db = DUP_STRING(frontend->default_db, NULL);
+    srv->ifname = DUP_STRING(frontend->ifname, "eth0");
+
+#if defined(SO_REUSEPORT)
+    g_message("%s:SO_REUSEPORT is defined", G_STRLOC);
+    if (frontend->worker_processes < 1) {
+        srv->worker_processes = 1;
+    } else if (frontend->worker_processes > MAX_WORK_PROCESSES) {
+        srv->worker_processes = MAX_WORK_PROCESSES;
+    } else {
+        srv->worker_processes = frontend->worker_processes;
+    }
+#else
+    g_message("%s:SO_REUSEPORT is undefined", G_STRLOC);
+    srv->worker_processes = 1;
+#endif
+
+    g_message("set worker processes:%d", srv->worker_processes);
 
     if (frontend->default_pool_size < 10) {
         frontend->default_pool_size = 10;
     }
+
     srv->mid_idle_connections = frontend->default_pool_size;
     g_message("set default pool size:%d", srv->mid_idle_connections);
 
@@ -643,7 +679,7 @@ init_parameters(struct chassis_frontend_t *frontend, chassis *srv)
     g_message("set max pool size:%d", srv->max_idle_connections);
 
     srv->max_resp_len = frontend->max_resp_len;
-    g_message("set max resp len:%d", srv->max_resp_len);
+    g_message("set max resp len:%lld", srv->max_resp_len);
 
     srv->current_time = time(0);
     if (frontend->max_alive_time < 60) {
@@ -659,9 +695,20 @@ init_parameters(struct chassis_frontend_t *frontend, chassis *srv)
     srv->max_header_size = frontend->max_header_size;
     g_message("%s:set max header size:%d", G_STRLOC, srv->max_header_size);
 
+#ifndef SIMPLE_PARSER
     if (frontend->worker_id > 0) {
         srv->guid_state.worker_id = frontend->worker_id & 0x3f;
+    } else {
+        struct timeval tp;
+        gettimeofday(&tp, NULL);
+        unsigned int seed = tp.tv_usec;
+        srv->guid_state.worker_id = (int)((rand_r(&seed) / (RAND_MAX + 1.0)) * 64);
+        g_warning("%s:please set worker id first, different instances should have different worker ids", G_STRLOC);
+        g_message("%s: the system chooses worker id automatically although it may have potential conflicts:%d",
+                G_STRLOC, srv->guid_state.worker_id);
     }
+#endif
+
 #undef DUP_STRING
 
     srv->client_found_rows = frontend->set_client_found_rows;
@@ -768,6 +815,7 @@ slow_query_log_handler(const gchar *log_domain, GLogLevelFlags log_level, const 
     FILE *fp = user_data;
     fwrite(message, 1, strlen(message), fp);
     fwrite("\n", 1, 1, fp);
+    fflush(fp);
 }
 
 static FILE *
@@ -787,6 +835,7 @@ init_slow_query_log(const char *main_log)
     g_string_free(log_name, TRUE);
     return fp;
 }
+
 
 /**
  * This is the "real" main which is called on UNIX platforms.
@@ -814,7 +863,6 @@ main_cmdline(int argc, char **argv)
     exit_code = status; \
     exit_location = G_STRLOC; \
     goto exit_nicely;
-
     int exit_code = EXIT_SUCCESS;
     const gchar *exit_location = G_STRLOC;
 
@@ -878,6 +926,14 @@ main_cmdline(int argc, char **argv)
     opts = chassis_options_new();
     opts->ignore_unknown = TRUE;
     srv->options = opts;
+    srv->argv = argv;
+    srv->argc = argc;
+
+    srv->argv = g_new0(char *, argc + 1);
+    int i;
+    for (i = 0; i < argc; i++) {
+        srv->argv[i] = g_strdup(argv[i]);
+    }
 
     chassis_frontend_set_chassis_options(frontend, opts, srv);
 
@@ -943,6 +999,8 @@ main_cmdline(int argc, char **argv)
         srv->config_manager = chassis_config_from_local_dir(srv->conf_dir, frontend->default_file);
     }
 
+    cetus_pid = getpid();
+
     /*
      * start the logging
      */
@@ -981,6 +1039,8 @@ main_cmdline(int argc, char **argv)
     g_message("libevent version: %s", event_get_version());
     g_message("config dir: %s", frontend->conf_dir);
 
+    srv->ssl = frontend->ssl;
+
     if (network_mysqld_init(srv) == -1) {
         g_print("network_mysqld_init failed\n");
         GOTO_EXIT(EXIT_FAILURE);
@@ -1000,18 +1060,15 @@ main_cmdline(int argc, char **argv)
         GOTO_EXIT(EXIT_FAILURE);
     }
 
-    {
-        gint i = 0;
-        srv->plugin_names = g_new(char *, (srv->modules->len + 1));
-        for (i = 0; frontend->plugin_names[i]; i++) {
-            if (!g_strcmp0("", frontend->plugin_names[i])) {
-                continue;
-            }
-
-            srv->plugin_names[i] = g_strdup(frontend->plugin_names[i]);
+    srv->plugin_names = g_new(char *, (srv->modules->len + 1));
+    for (i = 0; frontend->plugin_names[i]; i++) {
+        if (!g_strcmp0("", frontend->plugin_names[i])) {
+            continue;
         }
-        srv->plugin_names[i] = NULL;
+
+        srv->plugin_names[i] = g_strdup(frontend->plugin_names[i]);
     }
+    srv->plugin_names[i] = NULL;
 
     if (chassis_frontend_init_plugins(srv->modules,
                                       opts, srv->config_manager, &argc, &argv, frontend->keyfile, "cetus", &gerr)) {
@@ -1057,31 +1114,6 @@ main_cmdline(int argc, char **argv)
 
     if (srv->daemon_mode) {
         chassis_unix_daemonize();
-    }
-
-    srv->auto_restart = frontend->auto_restart;
-    if (srv->auto_restart) {
-        int child_exit_status = EXIT_SUCCESS;   /* forward the exit-status of the child */
-        int ret = chassis_unix_proc_keepalive(&child_exit_status);
-
-        if (ret > 0) {
-            /* the agent stopped */
-
-            exit_code = child_exit_status;
-            goto exit_nicely;
-        } else if (ret < 0) {
-            GOTO_EXIT(EXIT_FAILURE);
-        } else {
-            /* we are the child, go on */
-        }
-    }
-    if (srv->pid_file) {
-        if (0 != chassis_frontend_write_pidfile(srv->pid_file, &gerr)) {
-            g_critical("%s", gerr->message);
-            g_clear_error(&gerr);
-
-            GOTO_EXIT(EXIT_FAILURE);
-        }
     }
 
     if(frontend->group_replication_mode != 0 && frontend->group_replication_mode != 1) {
@@ -1204,16 +1236,11 @@ main_cmdline(int argc, char **argv)
     }
     srv->check_dns = frontend->check_dns;
 
-    cetus_monitor_start_thread(srv->priv->monitor, srv);
-    cetus_sql_log_start_thread_once(srv->sql_mgr);
-
     if (chassis_mainloop(srv)) {
         /* looks like we failed */
         g_critical("%s: Failure from chassis_mainloop. Shutting down.", G_STRLOC);
         GOTO_EXIT(EXIT_FAILURE);
     }
-
-    cetus_monitor_stop_thread(srv->priv->monitor);
 
   exit_nicely:
     /* necessary to set the shutdown flag, because the monitor will continue

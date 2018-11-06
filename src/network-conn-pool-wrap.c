@@ -54,6 +54,7 @@
 static void
 network_mysqld_con_idle_handle(int event_fd, short events, void *user_data)
 {
+    g_debug("%s:visit network_mysqld_con_idle_handle", G_STRLOC);
     network_connection_pool_entry *pool_entry = user_data;
     network_connection_pool *pool = pool_entry->pool;
 
@@ -187,7 +188,7 @@ network_pool_add_conn(network_mysqld_con *con, int is_swap)
 
         st->backend->connected_clients--;
 
-        network_socket_free(con->server);
+        network_socket_send_quit_and_free(con->server);
 
         st->backend = NULL;
         st->backend_ndx = -1;
@@ -336,7 +337,7 @@ network_connection_pool_swap(network_mysqld_con *con, int backend_ndx)
             g_debug("%s: server switch is true", G_STRLOC);
         } else {
             if (backend->type == BACKEND_TYPE_RO) {
-                g_message("%s: use orig server", G_STRLOC);
+                g_debug("%s: use orig server", G_STRLOC);
                 return NULL;
             }
         }

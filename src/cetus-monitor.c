@@ -44,9 +44,9 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 
-#define CHECK_ALIVE_INTERVAL 3
+#define CHECK_ALIVE_INTERVAL 1
 #define CHECK_ALIVE_TIMES 2
-#define CHECK_DELAY_INTERVAL 300 * 1000 /* 300ms */
+#define CHECK_DELAY_INTERVAL 100 * 1000 /* 100ms */
 
 #define ADDRESS_LEN 64
 
@@ -182,7 +182,7 @@ group_replication_detect(network_backends_t *bs, cetus_monitor_t *monitor)
     backends_num = network_backends_count(bs);
     for (i = 0; i < backends_num; i++) {
         network_backend_t *backend = network_backends_get(bs, i);
-        if (backend->state == BACKEND_STATE_MAINTAINING)
+        if (backend->state == BACKEND_STATE_MAINTAINING || backend->state == BACKEND_STATE_DELETED)
             continue;
 
         char *backend_addr = backend->addr->name->str;
@@ -213,8 +213,10 @@ group_replication_detect(network_backends_t *bs, cetus_monitor_t *monitor)
 
         row = mysql_fetch_row(rs_set);
         if(row == NULL || row[0] == NULL || row[1] == NULL) {
-            g_message("get primary info rows failed for group_replication. error: %d, text: %s, backend: %s",
-                                                                   mysql_errno(conn), mysql_error(conn), backend_addr);
+            if(backend->state != BACKEND_STATE_OFFLINE) {
+                g_message("get primary info rows failed for group_replication. error: %d, text: %s, backend: %s",
+                                                                                   mysql_errno(conn), mysql_error(conn), backend_addr);
+            }
             mysql_free_result(rs_set);
             continue;
         }
@@ -273,14 +275,13 @@ group_replication_detect(network_backends_t *bs, cetus_monitor_t *monitor)
             if((get_ip_by_name(row[0], ip) != 0) || ip[0] == '\0') {
                 g_message("get slave ip by name failed. error: %d, text: %s",
                                                        mysql_errno(conn), mysql_error(conn));
-                mysql_free_result(rs_set);
                 continue;
             }
             memset(slave_addr, 0, ADDRESS_LEN);
             snprintf(slave_addr, ADDRESS_LEN, "%s:%s", ip, row[1]);
             if(slave_addr[0] != '\0') {
                 slave_list = g_list_append(slave_list, strdup(slave_addr));
-                g_message("add slave %s in list, %d", slave_addr, g_list_length(slave_list));
+                g_debug("add slave %s in list, %d", slave_addr, g_list_length(slave_list));
             } else {
                 g_message("get slave address failed. error: %d, text: %s",
                                                        mysql_errno(conn), mysql_error(conn));
@@ -301,14 +302,14 @@ group_replication_detect(network_backends_t *bs, cetus_monitor_t *monitor)
         if(backend->type == BACKEND_TYPE_RW) {
             has_master++;
             if(!strcasecmp(backend_addr, master_addr)) {
-                if(backend->state != BACKEND_STATE_UP) {
-                    network_backends_modify(bs, i, BACKEND_TYPE_RW, BACKEND_STATE_UP, NO_PREVIOUS_STATE);
+                if(backend->state == BACKEND_STATE_OFFLINE) {
+                    network_backends_modify(bs, i, BACKEND_TYPE_RW, BACKEND_STATE_UNKNOWN, NO_PREVIOUS_STATE);
                 }
                 break;
             }
             GList *it = g_list_find_custom(slave_list, backend_addr, slave_list_compare);
             if(it) {
-                if(backend->state == BACKEND_STATE_DELETED || backend->state == BACKEND_STATE_MAINTAINING) {
+                if(backend->state == BACKEND_STATE_OFFLINE) {
                     network_backends_modify(bs, i, BACKEND_TYPE_RO, BACKEND_STATE_UNKNOWN, NO_PREVIOUS_STATE);
                 } else {
                     network_backends_modify(bs, i, BACKEND_TYPE_RO, backend->state, NO_PREVIOUS_STATE);
@@ -317,7 +318,9 @@ group_replication_detect(network_backends_t *bs, cetus_monitor_t *monitor)
                 g_free(it->data);
                 g_list_free(it);
             } else {
-                network_backends_modify(bs, i, BACKEND_TYPE_RO, BACKEND_STATE_DELETED, NO_PREVIOUS_STATE);
+                if(backend->state != BACKEND_STATE_MAINTAINING && backend->state != BACKEND_STATE_DELETED) {
+                    network_backends_modify(bs, i, BACKEND_TYPE_RO, BACKEND_STATE_OFFLINE, NO_PREVIOUS_STATE);
+                }
             }
             break;
         }
@@ -335,19 +338,25 @@ group_replication_detect(network_backends_t *bs, cetus_monitor_t *monitor)
         if(backend->type == BACKEND_TYPE_RO || backend->type == BACKEND_TYPE_UNKNOWN) {
             GList *it = g_list_find_custom(slave_list, backend_addr, slave_list_compare);
             if(it) {
-                if(backend->state == BACKEND_STATE_DELETED || backend->state == BACKEND_STATE_MAINTAINING) {
+                if(backend->state == BACKEND_STATE_OFFLINE) {
                     network_backends_modify(bs, i, BACKEND_TYPE_RO, BACKEND_STATE_UNKNOWN, NO_PREVIOUS_STATE);
+                } else {
+                    network_backends_modify(bs, i, BACKEND_TYPE_RO, backend->state, NO_PREVIOUS_STATE);
                 }
                 slave_list = g_list_remove_link(slave_list, it);
                 g_free(it->data);
                 g_list_free(it);
             } else {
                 if(master_addr[0] != '\0' && !strcasecmp(backend_addr, master_addr)) {
-                    network_backends_modify(bs, i, BACKEND_TYPE_RW, BACKEND_STATE_UP, NO_PREVIOUS_STATE);
+                    if(backend->state == BACKEND_STATE_OFFLINE) {
+                        network_backends_modify(bs, i, BACKEND_TYPE_RW, BACKEND_STATE_UNKNOWN, NO_PREVIOUS_STATE);
+                    } else {
+                        network_backends_modify(bs, i, BACKEND_TYPE_RW, backend->state, NO_PREVIOUS_STATE);
+                    }
                     has_master++;
                 } else {
-                    if(backend->type != BACKEND_TYPE_RO || backend->state != BACKEND_STATE_DELETED) {
-                        network_backends_modify(bs, i, BACKEND_TYPE_RO, BACKEND_STATE_DELETED, NO_PREVIOUS_STATE);
+                    if(backend->state != BACKEND_STATE_MAINTAINING && backend->state != BACKEND_STATE_DELETED) {
+                        network_backends_modify(bs, i, BACKEND_TYPE_RO, BACKEND_STATE_OFFLINE, NO_PREVIOUS_STATE);
                     }
                 }
             }
@@ -381,6 +390,7 @@ group_replication_detect(network_backends_t *bs, cetus_monitor_t *monitor)
 }
 
 #define ADD_MONITOR_TIMER(ev_struct, ev_cb, timeout) \
+    ev_now_update((struct ev_loop *) monitor->evloop);\
     evtimer_set(&(monitor->ev_struct), ev_cb, monitor);\
     event_base_set(monitor->evloop, &(monitor->ev_struct));\
     evtimer_add(&(monitor->ev_struct), &timeout);
@@ -389,8 +399,8 @@ gint
 check_hostname(network_backend_t *backend)
 {
      gint ret = 0;
-     gchar *p = NULL;
      if (!backend) return ret;
+
      gchar old_addr[INET_ADDRSTRLEN] = {""};
      inet_ntop(AF_INET, &(backend->addr->addr.ipv4.sin_addr), old_addr, sizeof(old_addr));
      if (0 != network_address_set_address(backend->addr, backend->address->str)) {
@@ -421,7 +431,7 @@ check_backend_alive(int fd, short what, void *arg)
         network_backend_t *backend = network_backends_get(bs, i);
         backend_state_t oldstate = backend->state;
         gint ret = 0;
-        if (backend->state == BACKEND_STATE_DELETED || backend->state == BACKEND_STATE_MAINTAINING)
+        if (backend->state == BACKEND_STATE_DELETED || backend->state == BACKEND_STATE_MAINTAINING || backend->state == BACKEND_STATE_OFFLINE)
             continue;
 
         char *backend_addr = backend->addr->name->str;
@@ -487,7 +497,7 @@ update_master_timestamp(int fd, short what, void *arg)
 
     /* Catch RW time 
      * Need a table to write from master and read from slave.
-     * CREATE TABLE `tb_heartbeat` (
+     * CREATE TABLE if not exists `tb_heartbeat` (
      *   `p_id` varchar(128) NOT NULL,
      *   `p_ts` timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
      *   PRIMARY KEY (`p_id`)
@@ -497,7 +507,7 @@ update_master_timestamp(int fd, short what, void *arg)
         network_backend_t *backend = network_backends_get(bs, i);
         backend_state_t oldstate = backend->state;
         gint ret = 0;
-        if (backend->state == BACKEND_STATE_DELETED || backend->state == BACKEND_STATE_MAINTAINING)
+        if (backend->state == BACKEND_STATE_DELETED || backend->state == BACKEND_STATE_MAINTAINING || backend->state == BACKEND_STATE_OFFLINE)
             continue;
 
         if (backend->type == BACKEND_TYPE_RW) {
@@ -542,7 +552,7 @@ hostnameloop:;
 
     /* Wait 50ms for RO write data */
     struct timeval timeout = { 0 };
-    timeout.tv_usec = 50 * 1000;
+    timeout.tv_usec = 10 * 1000;
     ADD_MONITOR_TIMER(read_slave_timer, check_slave_timestamp, timeout);
 }
 
@@ -560,7 +570,7 @@ check_slave_timestamp(int fd, short what, void *arg)
         backend_state_t oldstate = backend->state;
         gint ret = 0;
         if (backend->type == BACKEND_TYPE_RW || backend->state == BACKEND_STATE_DELETED ||
-            backend->state == BACKEND_STATE_MAINTAINING)
+            backend->state == BACKEND_STATE_MAINTAINING || backend->state == BACKEND_STATE_OFFLINE)
             continue;
 
         char *backend_addr = backend->addr->name->str;
@@ -675,6 +685,7 @@ check_config_worker(int fd, short what, void *arg)
             chassis_config_update_object_cache(conf, ob->name);
 
             /* then switch to main thread */
+            ev_now_update((struct ev_loop *) chas->event_base);\
             evtimer_set(&config_reload_timer, ob->func, ob->arg);
             event_base_set(chas->event_base, &config_reload_timer);
             evtimer_add(&config_reload_timer, &timeout);
@@ -746,7 +757,7 @@ cetus_monitor_mainloop(void *data)
 #if 0
     cetus_monitor_open(monitor, MONITOR_TYPE_CHECK_CONFIG);
 #endif
-    chassis_event_loop(loop);
+    chassis_event_loop(loop, NULL);
 
     g_message("monitor thread closing %d mysql conns", g_hash_table_size(monitor->backend_conns));
     g_hash_table_destroy(monitor->backend_conns);
