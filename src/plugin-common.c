@@ -204,8 +204,8 @@ do_read_auth(network_mysqld_con *con)
 
     } else {
         /* auth switch response */
-        gsize auth_data_len = packet.data->len - 4;
-        GString *auth_data = g_string_sized_new(auth_data_len);
+        gsize auth_data_len = packet.data->len - NET_HEADER_SIZE;
+        GString *auth_data = g_string_sized_new(calculate_alloc_len(auth_data_len));
         network_mysqld_proto_get_gstr_len(&packet, auth_data_len, auth_data);
 
         g_string_assign_len(con->client->response->auth_plugin_data, S(auth_data));
@@ -227,14 +227,22 @@ do_read_auth(network_mysqld_con *con)
         network_mysqld_con_send_error_full(recv_sock, L(ip_err_msg), 1045, "28000");
         log_sql_connect(con, ip_err_msg);
         g_free(ip_err_msg);
+        g_strfreev(client_addr_arr);
         con->state = ST_SEND_ERROR;
         return NETWORK_SOCKET_SUCCESS;
     }
 
+    g_strfreev(client_addr_arr);
+
     const char *client_charset = charset_get_name(auth->charset);
     if (client_charset == NULL) {
-        client_charset = con->srv->default_charset;
-        auth->charset = charset_get_number(client_charset);
+        g_message("%s: client charset is nil, orig charset num:%d", G_STRLOC, auth->charset);
+        char *err_msg = g_strdup_printf("client charset is not supported");
+        network_mysqld_con_send_error_full(recv_sock, L(err_msg), 1045, "28000");
+        log_sql_connect(con, err_msg);
+        g_free(err_msg);
+        con->state = ST_SEND_ERROR;
+        return NETWORK_SOCKET_SUCCESS;
     }
 
     recv_sock->charset_code = auth->charset;
@@ -375,7 +383,8 @@ do_connect_cetus(network_mysqld_con *con, network_backend_t **backend, int *back
          */
 
         int min_connected_clients = 0x7FFFFFFF;
-        for (i = 0; i < network_backends_count(g->backends); i++) {
+        int backends_count = network_backends_count(g->backends);
+        for (i = 0; i < backends_count; i++) {
             cur = network_backends_get(g->backends, i);
 
             /**
@@ -415,15 +424,20 @@ do_connect_cetus(network_mysqld_con *con, network_backend_t **backend, int *back
     else
         challenge->capabilities &= ~CLIENT_SSL;
 #endif
+
+    if (con->srv->compress_support) {
+        challenge->capabilities |= CLIENT_COMPRESS;
+    }
+
     network_mysqld_auth_challenge_set_challenge(challenge);
     challenge->server_status |= SERVER_STATUS_AUTOCOMMIT;
     challenge->charset = 0xC0;
     GString *version = g_string_new("");
     network_backends_server_version(g->backends, version);
-    g_string_append(version, " (cetus)");
     challenge->server_version_str = version->str;
     g_string_free(version, FALSE);
     challenge->thread_id = g->thread_id++;
+    g_debug("%s: generate thread id:%d", G_STRLOC, challenge->thread_id);
 
     if (g->thread_id > g->max_thread_id) {
         g->thread_id = 1 + (cetus_last_process << 24);
@@ -550,6 +564,7 @@ try_to_get_resp_from_query_cache(network_mysqld_con *con)
         int i;
         int len = item->queue->chunks->length;
         for (i = 0; i < len; i++) {
+            /* TODO g_queue_peek_nth is not efficient*/
             GString *packet = g_queue_peek_nth(item->queue->chunks, i);
             GString *dup_packet = g_string_new(NULL);
             g_string_append_len(dup_packet, S(packet));
@@ -625,6 +640,11 @@ proxy_put_shard_conn_to_pool(network_mysqld_con *con)
                 }
             }
 
+            if (is_put_to_pool_allowed && con->srv->server_conn_refresh_time > server->create_time) {
+                is_put_to_pool_allowed = 0;
+                g_message("%s: old connection for con:%p", G_STRLOC, con);
+            }
+
             CHECK_PENDING_EVENT(&(server->event));
 
             if (is_put_to_pool_allowed) {
@@ -651,6 +671,10 @@ proxy_put_shard_conn_to_pool(network_mysqld_con *con)
 
     g_ptr_array_free(con->servers, TRUE);
     con->servers = NULL;
+    if (con->server) {
+        g_message("%s: con server is not NULL when having freed servers", G_STRLOC);
+        con->server = NULL;
+    }
     con->client->is_server_conn_reserved = 0;
     con->attr_adj_state = ATTR_START;
 
@@ -679,3 +703,12 @@ remove_mul_server_recv_packets(network_mysqld_con *con)
         network_mysqld_queue_reset(ss->server);
     }
 }
+
+void
+truncate_default_db_when_drop_database(network_mysqld_con *con, char *schema_name)
+{
+    if (schema_name && strcasecmp(con->client->default_db->str, schema_name) == 0) {
+        g_string_truncate(con->client->default_db, 0);
+    }
+}
+

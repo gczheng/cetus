@@ -4,9 +4,14 @@
 
 Cetus是由C语言开发的关系型数据库MySQL的中间件，主要提供了一个全面的数据库访问代理功能。Cetus连接方式与MySQL基本兼容，应用程序几乎不用修改即可通过Cetus访问数据库，实现了数据库层的水平扩展和高可用。
 
+## 版本选择
+
+生产环境，建议选择最新的[Release版本](https://github.com/cetus-tools/cetus/releases)使用。
+
+
 ## 主要功能特性
 
-Cetus分为读写分离和分库两个版本。
+Cetus分为读写分离和分库（分表是分库的一种特殊形式）两个版本。
 
 **针对读写分离版本：**
 
@@ -30,7 +35,7 @@ Cetus分为读写分离和分库两个版本。
 
 - 支持域名连接后端
 
-- SSL/TLS支持
+- SSL/TLS支持（客户端）
 
 - MGR支持
 
@@ -41,6 +46,8 @@ Cetus分为读写分离和分库两个版本。
 - 多进程无锁提升运行效率
 
 - 支持透明的后端连接池
+
+- 支持SQL读写分离
 
 - 支持数据分库
 
@@ -64,7 +71,7 @@ Cetus分为读写分离和分库两个版本。
 
 - 支持域名连接后端
 
-- SSL/TLS支持
+- SSL/TLS支持（客户端）
 
 - MGR支持
 
@@ -98,6 +105,10 @@ Cetus分为读写分离和分库两个版本。
 
 12. [Cetus 路由策略介绍](./doc/cetus-routing-strategy.md)
 
+13. [Cetus 分表使用说明](./doc/cetus-partition-profile.md)
+
+14. [Cetus数据迁移追数工具使用手册](./dumpbinlog-tool/readme.md)
+
 ### Cetus架构与设计
 
 [Cetus 架构和实现](./doc/cetus-architecture.md)
@@ -114,10 +125,18 @@ Cetus分为读写分离和分库两个版本。
 
 3. [Cetus rpm说明](./doc/cetus-rpm.md)
 
+4. [Cetus Docker镜像使用](./doc/cetus-docker.md)
+
+5. [Cetus 图形化Web管理界面](https://github.com/Lede-Inc/Cetus-GUI)
+
 ### Cetus测试
 
 [Cetus 测试报告](./doc/cetus-test.md)
 
 ## 反馈
 
-如果您在使用Cetus的过程中发现BUG或者有新的功能需求，请加入QQ群(521824702)进行交流。
+如果您在使用Cetus的过程中发现BUG或者有新的功能需求，欢迎在issue里面提出来，或者加入QQ群(521824702)进行交流。
+
+## 加入Cetus知识星球，享受优质服务
+
+![cetus](https://raw.github.com/cetus-tools/cetus/master/doc/cetus知识星球二维码.png)

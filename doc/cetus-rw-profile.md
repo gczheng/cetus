@@ -64,7 +64,7 @@ Cetus支持部分会话级系统变量的设置，可以通过在variables.json�
 
 variables.json同样采用键值对的结构，其中键是固定的，值是用用户自定义的。
 
-其中name的值是需要设置的会话级系统变量的名称；type的值是变量的类型，可以为string或string-csv逗号分隔的字符串值，目前尚未支持int类型；allowed_values的值是指定允许设定的变量值，可以使用通配符\*表示此变量设任意值都允许；silent_values的值是指定静默处理的值，可以使用通配符\*，表示此变量设任意值都静默处理。
+其中name的值是需要设置的会话级系统变量的名称；type的值是变量的类型，可以为int,string或string-csv逗号分隔的字符串值；allowed_values的值是指定允许设定的变量值，可以使用通配符\*表示此变量设任意值都允许；silent_values的值是指定静默处理的值，可以使用通配符\*，表示此变量设任意值都静默处理。特别提醒，配置文件中配置的所有项，都要用双引号包裹起来，否则不生效。
 
 **注意：配置过allowed_values才能走到静默处理流程**
 
@@ -83,16 +83,16 @@ variables.json同样采用键值对的结构，其中键是固定的，值是用
      ]
    },
    {
-     "name": "connect_timeout",
-     "type": "string",
-     "allowed_values": ["*"],
-     "silent_values": ["10", "100"]
+     "name": "profiling",
+     "type": "int",
+     "allowed_values": ["0", "1"],
+     "silent_values": ["*"]
    }
  ]
 }
 ```
 
-我们配置了sql_mode变量和connect_timeout变量。其中sql_mode变量的类型是string-csv（逗号分隔的字符串值），指定了允许设定的变量有STRICT_TRANS_TABLES、NO_AUTO_CREATE_USER和NO_ENGINE_SUBSTITUTION；connect_timeout变量的类型是string（字符串），此变量设任意值都允许，指定静默处理的值为10和100。
+我们配置了sql_mode变量和profiling变量。其中sql_mode变量的类型是string-csv（逗号分隔的字符串值），指定了允许设定的变量有STRICT_TRANS_TABLES、NO_AUTO_CREATE_USER和NO_ENGINE_SUBSTITUTION；profiling变量的类型是int（整型），此变量允许的值是0和1，指定静默处理的值为所有，即0和1。
 
 ##  3.proxy.conf
 
@@ -123,7 +123,7 @@ log-file=XXXX
 log-level=XXXX
 ```
 
-proxy.conf是读写分离版本的启动配置文件，在启动Cetus时需要加载，配置文件采用key＝value的形式，其中key是固定的，可参考[Cetus 启动配置选项说明](https://github.com/Lede-Inc/cetus/blob/master/doc/cetus-configuration.md)，value是用户自定义的。
+proxy.conf是读写分离版本的启动配置文件，在启动Cetus时需要加载，配置文件采用key=value的形式，其中key是固定的，可参考[Cetus 启动配置选项说明](https://github.com/Lede-Inc/cetus/blob/master/doc/cetus-configuration.md)，value是用户自定义的。
 
 例如：
 
@@ -147,7 +147,7 @@ admin-password=admin
 
 # Backend Configuration
 default-db=test
-default-username=dbtest
+default-username=test
 
 # File and Log Configuration
 log-file=cetus.log
@@ -158,11 +158,11 @@ log-level=debug
 
 worker-processes为4，代表工作进程数量为4，建议设置数量小于等于cpu数目；
 
-proxy-address的值是Proxy监听的IP和端口，我们设置为127.0.0.1:1234；proxy-backend-addresses的值是读写后端(主库)的IP和端口，我们设置为127.0.0.1:3306，可多项；proxy-read-only-backend-addresses的值是只读后端(从库)的IP和端口，我们设置为127.0.0.1:3307，可多项；
+proxy-address的值是Proxy监听的IP和端口，我们设置为127.0.0.1:1234；proxy-backend-addresses的值是读写后端(主库)的IP和端口，我们设置为127.0.0.1:3306，只允许一个主库；proxy-read-only-backend-addresses的值是只读后端(从库)的IP和端口，我们设置为127.0.0.1:3307，可多项；
 
 admin-address的值是管理模块的IP和端口，我们设置为127.0.0.1:5678；admin-username的值是管理模块的用户名，我们设置为admin；admin-password的值是管理模块的密码明文，我们设置为admin；
 
-default-db的值是默认数据库，当连接未指定db时，使用的默认数据库名称，我们设置为test；default-username的值是默认登陆用户名，在Proxy启动时自动创建连接使用的用户名，我们设置为dbtest；
+default-db的值是默认数据库，当连接未指定db时，使用的默认数据库名称，我们设置为test；default-username的值是默认登陆用户名，在Proxy启动时自动创建连接使用的用户名，我们设置为test；
 
 log-file的值是日志文件路径，我们设置为当前安装路径下的cetus.log；log-level的值是日志记录级别，可选 info | message | warning | error | critical(default)，我们设置为debug；这些是必备启动选项，其他可选的性能配置详见[Cetus 启动配置选项说明](https://github.com/Lede-Inc/cetus/blob/master/doc/cetus-configuration.md)。
 
@@ -187,3 +187,5 @@ log-file的值是日志文件路径，我们设置为当前安装路径下的cet
 **7）reduce-connections=\[true\|false\]，自动减少过多的后端连接数量**
 
 **8）max-alive-time=\<num\>，设置后端连接最大存活时间**
+
+**9）enable-fast-stream=\[true\|false\]，启动fast stream，快速处理只读响应，release版本默认为false，开发版本默认为true**

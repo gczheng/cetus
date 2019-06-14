@@ -80,6 +80,7 @@
 #include "chassis-options.h"
 #include "cetus-monitor.h"
 #include "chassis-sql-log.h"
+#include "lib/sql-expression.h"
 
 #define GETTEXT_PACKAGE "cetus"
 
@@ -107,6 +108,9 @@ struct chassis_frontend_t {
     int config_port;
     int disable_threads;
     int is_tcp_stream_enabled;
+    int is_fast_stream_enabled;
+    int is_partition_mode;
+    int is_sql_special_processed;
     int is_back_compressed;
     int is_client_compress_support;
     int check_slave_delay;
@@ -116,6 +120,7 @@ struct chassis_frontend_t {
     int cetus_max_allowed_packet;
     int default_query_cache_timeout;
     int client_idle_timeout;
+    int incomplete_tran_idle_timeout;
     int maintained_client_idle_timeout;
     int query_cache_enabled;
     int disable_dns_cache;
@@ -152,6 +157,7 @@ struct chassis_frontend_t {
     char *ifname;
 
     char *remote_config_url;
+    char *trx_isolation_level;
 
     gint group_replication_mode;
 
@@ -184,7 +190,8 @@ chassis_frontend_new(void)
     frontend->is_client_compress_support = 0;
     frontend->xa_log_detailed = 0;
 
-    frontend->default_pool_size = 10;
+    frontend->default_pool_size = DEFAULT_POOL_SIZE;
+    frontend->worker_processes = 1;
     frontend->max_resp_len = 10 * 1024 * 1024;  /* 10M */
     frontend->max_alive_time = DEFAULT_LIVE_TIME;
     frontend->merged_output_size = 8192;
@@ -195,11 +202,20 @@ chassis_frontend_new(void)
     frontend->slave_delay_down_threshold_sec = 10.0;
     frontend->default_query_cache_timeout = 100;
     frontend->client_idle_timeout = 8 * HOURS;
+    frontend->incomplete_tran_idle_timeout = 3600;
     frontend->maintained_client_idle_timeout = 30;
-    frontend->long_query_time = MAX_QUERY_TIME;
+    frontend->long_query_time = 1000;
     frontend->cetus_max_allowed_packet = MAX_ALLOWED_PACKET_DEFAULT;
     frontend->disable_dns_cache = 0;
 
+#ifndef SIMPLE_PARSER
+    frontend->is_tcp_stream_enabled = 0;
+#else
+    frontend->is_tcp_stream_enabled = 1;
+#endif
+    frontend->is_fast_stream_enabled = 0;
+    frontend->is_partition_mode = 0;
+    frontend->is_sql_special_processed = 0;
     frontend->group_replication_mode = 0;
     frontend->sql_log_bufsize = 0;
     frontend->sql_log_switch = NULL;
@@ -248,6 +264,7 @@ chassis_frontend_free(struct chassis_frontend_t *frontend)
     }
 
     g_free(frontend->remote_config_url);
+    g_free(frontend->trx_isolation_level);
     g_free(frontend->sql_log_switch);
     g_free(frontend->sql_log_prefix);
     g_free(frontend->sql_log_path);
@@ -458,6 +475,12 @@ chassis_frontend_set_chassis_options(struct chassis_frontend_t *frontend, chassi
                         assign_default_client_idle_timeout, show_default_client_idle_timeout, ALL_OPTS_PROPERTY);
 
     chassis_options_add(opts,
+                        "default-incomplete-tran-idle-timeout",
+                        0, 0, OPTION_ARG_INT, &(frontend->incomplete_tran_idle_timeout),
+                        "set client incomplete transaction idle timeout in seconds(default 3600 seconds)", "<integer>",
+                        assign_default_incomplete_tran_idle_timeout, show_default_incomplete_tran_idle_timeout, ALL_OPTS_PROPERTY);
+
+    chassis_options_add(opts,
                         "default-maintained-client-idle-timeout",
                         0, 0, OPTION_ARG_INT, &(frontend->maintained_client_idle_timeout),
                         "set maintained client idle timeout in seconds(default 30 seconds)", "<integer>",
@@ -486,6 +509,15 @@ chassis_frontend_set_chassis_options(struct chassis_frontend_t *frontend, chassi
     chassis_options_add(opts, "enable-tcp-stream", 0, 0, OPTION_ARG_NONE, &(frontend->is_tcp_stream_enabled), "", NULL,
                         NULL, show_enable_tcp_stream, SHOW_OPTS_PROPERTY|SAVE_OPTS_PROPERTY);
 
+    chassis_options_add(opts, "enable-fast-stream", 0, 0, OPTION_ARG_NONE, &(frontend->is_fast_stream_enabled), "", NULL,
+                        NULL, show_enable_fast_stream, SHOW_OPTS_PROPERTY|SAVE_OPTS_PROPERTY);
+
+    chassis_options_add(opts, "enable-sql-special-processed", 0, 0, OPTION_ARG_NONE, &(frontend->is_sql_special_processed), "", NULL,
+                        NULL, show_enable_sql_special_processed, SHOW_OPTS_PROPERTY|SAVE_OPTS_PROPERTY);
+
+    chassis_options_add(opts, "partition-mode", 0, 0, OPTION_ARG_NONE, &(frontend->is_partition_mode), "", NULL,
+                        NULL, show_enable_partition, SHOW_OPTS_PROPERTY|SAVE_OPTS_PROPERTY);
+
     chassis_options_add(opts,
                         "log-xa-in-detail",
                         0, 0, OPTION_ARG_NONE, &(frontend->xa_log_detailed), "log xa in detail", NULL,
@@ -511,6 +543,11 @@ chassis_frontend_set_chassis_options(struct chassis_frontend_t *frontend, chassi
                         0, 0, OPTION_ARG_STRING, &(frontend->remote_config_url),
                         "Remote config url, mysql://xx", "<string>",
                         NULL, show_remote_conf_url, SHOW_OPTS_PROPERTY);
+    chassis_options_add(opts,
+                        "trx-isolation-level",
+                        0, 0, OPTION_ARG_STRING, &(frontend->trx_isolation_level),
+                        "transaction isolation level, default: REPEATABLE READ", "<string>",
+                        NULL, show_trx_isolation_level, SHOW_OPTS_PROPERTY);
     chassis_options_add(opts,
                         "group-replication-mode",
                         0, 0, OPTION_ARG_INT, &(frontend->group_replication_mode),
@@ -650,7 +687,7 @@ init_parameters(struct chassis_frontend_t *frontend, chassis *srv)
 
 #if defined(SO_REUSEPORT)
     g_message("%s:SO_REUSEPORT is defined", G_STRLOC);
-    if (frontend->worker_processes < 1) {
+    if (frontend->worker_processes < 0) {
         srv->worker_processes = 1;
     } else if (frontend->worker_processes > MAX_WORK_PROCESSES) {
         srv->worker_processes = MAX_WORK_PROCESSES;
@@ -664,12 +701,19 @@ init_parameters(struct chassis_frontend_t *frontend, chassis *srv)
 
     g_message("set worker processes:%d", srv->worker_processes);
 
-    if (frontend->default_pool_size < 10) {
-        frontend->default_pool_size = 10;
+    if (frontend->default_pool_size < DEFAULT_POOL_SIZE) {
+        frontend->default_pool_size = DEFAULT_POOL_SIZE;
     }
 
     srv->mid_idle_connections = frontend->default_pool_size;
     g_message("set default pool size:%d", srv->mid_idle_connections);
+
+    int connections_created_per_time = srv->mid_idle_connections / srv->worker_processes;
+    if (connections_created_per_time > MAX_CREATE_CONN_NUM) {
+        srv->connections_created_per_time = MAX_CREATE_CONN_NUM;
+    } else {
+        srv->connections_created_per_time = connections_created_per_time;
+    }
 
     if (frontend->max_pool_size >= srv->mid_idle_connections) {
         srv->max_idle_connections = frontend->max_pool_size;
@@ -729,6 +773,20 @@ init_parameters(struct chassis_frontend_t *frontend, chassis *srv)
     if (srv->is_tcp_stream_enabled) {
         g_message("%s:tcp stream enabled", G_STRLOC);
     }
+    srv->is_fast_stream_enabled = frontend->is_fast_stream_enabled;
+    if (srv->is_fast_stream_enabled) {
+        g_message("%s:fast stream enabled", G_STRLOC);
+    }
+#ifndef SIMPLE_PARSER
+    srv->is_partition_mode = frontend->is_partition_mode;
+    if (srv->is_partition_mode) {
+        g_message("%s:partition mode", G_STRLOC);
+    }
+#endif
+    srv->is_sql_special_processed = frontend->is_sql_special_processed;
+    if (srv->is_sql_special_processed) {
+        g_message("%s:enable sql special porcessing", G_STRLOC);
+    }
     srv->disable_threads = frontend->disable_threads;
     srv->is_back_compressed = frontend->is_back_compressed;
     srv->compress_support = frontend->is_client_compress_support;
@@ -749,11 +807,45 @@ init_parameters(struct chassis_frontend_t *frontend, chassis *srv)
 
     srv->default_query_cache_timeout = MAX(frontend->default_query_cache_timeout, 1);
     srv->client_idle_timeout = MAX(frontend->client_idle_timeout, 10);
+    srv->incomplete_tran_idle_timeout = MAX(frontend->incomplete_tran_idle_timeout, 10);
     srv->maintained_client_idle_timeout = MAX(frontend->maintained_client_idle_timeout, 10);
     srv->long_query_time = MIN(frontend->long_query_time, MAX_QUERY_TIME);
     srv->cetus_max_allowed_packet = CLAMP(frontend->cetus_max_allowed_packet,
                                           MAX_ALLOWED_PACKET_FLOOR, MAX_ALLOWED_PACKET_CEIL);
     srv->check_dns = frontend->check_dns;
+
+    if (frontend->trx_isolation_level != NULL) {
+        if (strcasecmp(frontend->trx_isolation_level, "REPEATABLE READ") == 0 ||
+                strcasecmp(frontend->trx_isolation_level, "REPEATABLE-READ"))
+        {
+            srv->internal_trx_isolation_level = TF_REPEATABLE_READ;
+            srv->trx_isolation_level = g_strdup("REPEATABLE-READ");
+        } else if (strcasecmp(frontend->trx_isolation_level, "READ COMMITTED") == 0 ||
+                strcasecmp(frontend->trx_isolation_level, "READ-COMMITTED") == 0)
+        {
+            srv->internal_trx_isolation_level = TF_READ_COMMITTED;
+            srv->trx_isolation_level = g_strdup("READ-COMMITTED");
+        } else if (strcasecmp(frontend->trx_isolation_level, "READ UNCOMMITTED") == 0 ||
+                strcasecmp(frontend->trx_isolation_level, "READ-UNCOMMITTED") == 0)
+        {
+            srv->internal_trx_isolation_level = TF_READ_UNCOMMITTED;
+            srv->trx_isolation_level = g_strdup("READ-UNCOMMITTED");
+        } else if (strcasecmp(frontend->trx_isolation_level, "SERIALIZABLE") == 0) {
+            srv->internal_trx_isolation_level = TF_SERIALIZABLE;
+            srv->trx_isolation_level = g_strdup("SERIALIZABLE");
+        } else {
+            srv->internal_trx_isolation_level = TF_READ_COMMITTED;
+            g_warning("trx isolation level:%s is not expected, use READ COMMITTED instead",
+                    frontend->trx_isolation_level);
+            srv->trx_isolation_level = g_strdup("READ-COMMITTED");
+        }
+    } else {
+        g_message("trx isolation level is not set");
+        srv->internal_trx_isolation_level = TF_READ_COMMITTED;
+        srv->trx_isolation_level = g_strdup("READ-COMMITTED");
+    }
+    
+    g_message("trx isolation level value:%s", srv->trx_isolation_level);
 }
 
 static void
@@ -814,8 +906,6 @@ slow_query_log_handler(const gchar *log_domain, GLogLevelFlags log_level, const 
 {
     FILE *fp = user_data;
     fwrite(message, 1, strlen(message), fp);
-    fwrite("\n", 1, 1, fp);
-    fflush(fp);
 }
 
 static FILE *
@@ -926,10 +1016,8 @@ main_cmdline(int argc, char **argv)
     opts = chassis_options_new();
     opts->ignore_unknown = TRUE;
     srv->options = opts;
-    srv->argv = argv;
     srv->argc = argc;
-
-    srv->argv = g_new0(char *, argc + 1);
+    srv->argv = g_new0(char *, argc);
     int i;
     for (i = 0; i < argc; i++) {
         srv->argv[i] = g_strdup(argv[i]);
@@ -938,7 +1026,7 @@ main_cmdline(int argc, char **argv)
     chassis_frontend_set_chassis_options(frontend, opts, srv);
 
     if (FALSE == chassis_options_parse_cmdline(opts, &argc, &argv, &gerr)) {
-        g_critical("%s", gerr->message);
+        g_critical("%s:%s", G_STRLOC, gerr->message);
         GOTO_EXIT(EXIT_FAILURE);
     }
 
@@ -1041,6 +1129,8 @@ main_cmdline(int argc, char **argv)
 
     srv->ssl = frontend->ssl;
 
+    init_parameters(frontend, srv);
+
     if (network_mysqld_init(srv) == -1) {
         g_print("network_mysqld_init failed\n");
         GOTO_EXIT(EXIT_FAILURE);
@@ -1113,6 +1203,7 @@ main_cmdline(int argc, char **argv)
     srv->daemon_mode = frontend->daemon_mode;
 
     if (srv->daemon_mode) {
+        g_message("%s:daemon mode", G_STRLOC);
         chassis_unix_daemonize();
     }
 
@@ -1146,7 +1237,6 @@ main_cmdline(int argc, char **argv)
         GOTO_EXIT(EXIT_FAILURE);
     }
 
-    init_parameters(frontend, srv);
 
 #ifndef SIMPLE_PARSER
     if (!frontend->log_xa_filename)

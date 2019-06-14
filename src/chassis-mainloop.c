@@ -197,6 +197,12 @@ chassis_free(chassis *chas)
     if  (chas->unix_socket_name) {
         g_free(chas->unix_socket_name);
     }
+    if (chas->trx_isolation_level) {
+        g_free(chas->trx_isolation_level);
+    }
+    if (chas->default_charset) {
+       g_free(chas->default_charset);
+    }
 
     g_free(chas->event_hdr_version);
 
@@ -255,6 +261,13 @@ chassis_free(chassis *chas)
 
     if(chas->sql_mgr) {
         sql_log_free(chas->sql_mgr);
+    }
+
+    if (chas->argv) {
+        for (i = 0; i < chas->argc; i++) {
+            free(chas->argv[i]);
+        }
+        free(chas->argv);
     }
 
     g_free(chas);
@@ -347,11 +360,7 @@ chassis_mainloop(void *_chas)
 
 #if !GLIB_CHECK_VERSION(2, 32, 0)
     /* GLIB below 2.32 must call thread_init if multi threads */
-    if (!chas->disable_threads) {
-        g_thread_init(NULL);
-    } else {
-        g_debug("Disable threads creation.");
-    }
+    g_thread_init(NULL);
 #endif
 
     if (cetus_init_signals() == -1 ) {

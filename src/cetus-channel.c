@@ -66,7 +66,7 @@ cetus_write_channel(int s, cetus_channel_t *ch, size_t size)
             return NETWORK_SOCKET_WAIT_FOR_EVENT;
         }
 
-        g_critical("%s:sendmsg() failed, err:%s", G_STRLOC, strerror(errno));
+        g_critical("%s:sendmsg() failed, err:%s", G_STRLOC, strerror(err));
         return NETWORK_SOCKET_ERROR;
     }
 
@@ -105,11 +105,11 @@ cetus_read_channel(int s, cetus_channel_t *ch, size_t size)
     if (n == -1) {
         int err = errno;
         if (err == EAGAIN) {
-            g_debug("%s:recvmsg() EAGAIN, errno:%d", G_STRLOC, errno);
+            g_debug("%s:recvmsg() EAGAIN, errno:%d", G_STRLOC, err);
             return NETWORK_SOCKET_WAIT_FOR_EVENT;
         }
 
-        g_critical("%s:recvmsg() failed, err:%s", G_STRLOC, strerror(errno));
+        g_critical("%s:recvmsg() failed, err:%s", G_STRLOC, strerror(err));
         return NETWORK_SOCKET_ERROR;
     }
 
@@ -125,6 +125,7 @@ cetus_read_channel(int s, cetus_channel_t *ch, size_t size)
 
     switch (ch->basics.command) {
         case CETUS_CMD_ADMIN:
+        case CETUS_CMD_ADMIN_RESP:
         case CETUS_CMD_OPEN_CHANNEL: 
             if (cmsg.cm.cmsg_len < (socklen_t) CMSG_LEN(sizeof(int))) {
                 g_critical("%s:recvmsg() returned too small ancillary data:%d", 
@@ -145,8 +146,13 @@ cetus_read_channel(int s, cetus_channel_t *ch, size_t size)
             break;
     }
 
-    if (msg.msg_flags & (MSG_TRUNC|MSG_CTRUNC)) {
-        g_critical("%s:recvmsg() truncated data", G_STRLOC); 
+    if (ch->basics.command == CETUS_CMD_ADMIN || ch->basics.command == CETUS_CMD_ADMIN_RESP) {
+        close(ch->basics.fd);
+        ch->basics.fd = 0;
+    } else {
+        if (msg.msg_flags & (MSG_TRUNC|MSG_CTRUNC)) {
+            g_critical("%s:recvmsg() truncated data", G_STRLOC); 
+        }
     }
 
 

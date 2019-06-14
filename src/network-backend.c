@@ -208,6 +208,9 @@ network_backends_add(network_backends_t *bs, const gchar *address,
         g_string_assign(new_backend->server_group, group_p + 1);
         g_string_assign_len(new_backend->address, address, group_p - address);
     } else {
+        if (bs->is_partition_mode) {
+            network_backends_add_group(bs, NULL);
+        }
         g_string_assign(new_backend->address, address);
     }
 
@@ -396,8 +399,6 @@ network_backends_count(network_backends_t *bs)
     return len;
 }
 
-#define DEFAULT_CHARSET   '\x21'
-
 
 gboolean
 network_backends_load_config(network_backends_t *bs, chassis *srv)
@@ -407,7 +408,8 @@ network_backends_load_config(network_backends_t *bs, chassis *srv)
         return -1;
     }
     int i;
-    for (i = 0; i < network_backends_count(bs); i++) {
+    int count = network_backends_count(bs);
+    for (i = 0; i < count; i++) {
         network_backend_t *backend = network_backends_get(bs, i);
         if (backend) {
             set_backend_config(backend, srv);
@@ -422,8 +424,14 @@ network_backends_get_group(network_backends_t *bs, const GString *name)
     int i = 0;
     for (i = 0; i < bs->groups->len; ++i) {
         network_group_t *group = g_ptr_array_index(bs->groups, i);
-        if (g_string_equal(group->name, name)) {
-            return group;
+        if (bs->is_partition_mode) {
+            if (strcmp(group->name->str, PARTITION_SUPER_GROUP) == 0) {
+                return group;
+            }
+        } else {
+            if (g_string_equal(group->name, name)) {
+                return group;
+            }
         }
     }
     return NULL;
@@ -432,7 +440,13 @@ network_backends_get_group(network_backends_t *bs, const GString *name)
 static void
 network_backends_add_group(network_backends_t *bs, const char *name)
 {
-    GString *gp_name = g_string_new(name);
+    GString *gp_name;
+
+    if (bs->is_partition_mode) {
+        gp_name = g_string_new(PARTITION_SUPER_GROUP);
+    } else {
+        gp_name = g_string_new(name);
+    }
     if (!network_backends_get_group(bs, gp_name)) { /* dup check */
         network_group_t *gp = network_group_new(gp_name);
         g_ptr_array_add(bs->groups, gp);

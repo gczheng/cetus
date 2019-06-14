@@ -192,13 +192,30 @@ NETWORK_MYSQLD_PLUGIN_PROTO(server_read_auth) {
         }
     } else {
         /* auth switch response */
-        gsize auth_data_len = packet.data->len - 4;
-        GString *auth_data = g_string_sized_new(auth_data_len);
+        gsize auth_data_len = packet.data->len - NET_HEADER_SIZE;
+        GString *auth_data = g_string_sized_new(calculate_alloc_len(auth_data_len));
         network_mysqld_proto_get_gstr_len(&packet, auth_data_len, auth_data);
         g_string_assign_len(con->client->response->auth_plugin_data, S(auth_data));
         g_string_free(auth_data, TRUE);
         auth = con->client->response;
     }
+
+    char **client_addr_arr = g_strsplit(con->client->src->name->str, ":", -1);
+    char *client_ip = client_addr_arr[0];
+    char *client_username = con->client->response->username->str;
+
+    gboolean can_pass = cetus_acl_verify(con->srv->priv->acl, client_username, client_ip);
+    if (!can_pass) {
+        char *ip_err_msg = g_strdup_printf("Access denied for user '%s@%s'",
+                                           client_username, client_ip);
+        network_mysqld_con_send_error_full(recv_sock, L(ip_err_msg), 1045, "28000");
+        g_free(ip_err_msg);
+        g_strfreev(client_addr_arr);
+        con->state = ST_SEND_ERROR;
+        return NETWORK_SOCKET_SUCCESS;
+    }
+
+    g_strfreev(client_addr_arr);
 
     /* check if the password matches */
     excepted_response = g_string_new(NULL);
@@ -283,7 +300,7 @@ network_read_sql_resp(int G_GNUC_UNUSED fd, short events, void *user_data)
     if (ch.basics.command == CETUS_CMD_ADMIN_RESP) {
         con->num_read_pending--;
         int  unread_len = ch.admin_sql_resp_len;
-        GString *raw_packet = g_string_sized_new(unread_len);
+        GString *raw_packet = g_string_sized_new(calculate_alloc_len(unread_len));
         unsigned char *p = raw_packet->str;
 
         do {
@@ -356,7 +373,6 @@ network_read_sql_resp(int G_GNUC_UNUSED fd, short events, void *user_data)
             network_socket *worker = g_ptr_array_index(con->servers, i);
             g_ptr_array_add(recv_queues, worker->recv_queue);
         }
-        /*TODO free all servers here */
 
         GPtrArray *servers = con->servers;
         con->servers = NULL;
@@ -376,6 +392,9 @@ network_read_sql_resp(int G_GNUC_UNUSED fd, short events, void *user_data)
         }
         g_ptr_array_free(servers, TRUE);
 
+        if (!con->data) {
+            g_ptr_array_free(recv_queues, TRUE);
+        }
         network_mysqld_con_handle(-1, 0, con);
     }
 }
@@ -508,7 +527,7 @@ static void visit_parser(network_mysqld_con *con, const char *sql)
         g_message("%s:syntax error", G_STRLOC);
         network_mysqld_con_send_error(con->client,
            C("syntax error, 'select help' for usage"));
-        if (con->is_admin_client) {
+        if (con->is_processed_by_subordinate) {
             con->direct_answer = 1;
         }
     }
@@ -565,6 +584,10 @@ static network_mysqld_stmt_ret admin_process_query(network_mysqld_con *con)
     con->admin_read_merge = 0;
 
     visit_parser(con, con->orig_sql->str);
+    if (con->srv->worker_processes == 0) {
+        con->direct_answer = 1;
+    }
+
     if (con->direct_answer) {
         return PROXY_SEND_RESULT;
     } else {
@@ -596,6 +619,12 @@ NETWORK_MYSQLD_PLUGIN_PROTO(server_read_query) {
     gettimeofday(&(con->req_recv_time), NULL);
 
     con->is_admin_client = 1;
+
+    if (con->srv->worker_processes == 0) {
+        con->is_processed_by_subordinate = 0;
+    } else {
+        con->is_processed_by_subordinate = 1;
+    }
     recv_sock = con->client;
 
     if (recv_sock->recv_queue->chunks->length != 1) {
@@ -635,6 +664,8 @@ NETWORK_MYSQLD_PLUGIN_PROTO(server_timeout)
 {
     con->prev_state = con->state;
     con->state = ST_SEND_ERROR;
+
+    g_debug("%s:call server_timeout", G_STRLOC);
 
     return NETWORK_SOCKET_SUCCESS;
 }
@@ -779,7 +810,7 @@ network_mysqld_admin_plugin_get_options(chassis_plugin_config *config)
     return opts.options;
 }
 
-#define MAX_CMD_OR_PATH_LEN 128
+#define MAX_CMD_OR_PATH_LEN 108
 static void remove_unix_socket_if_stale(chassis *chas)
 {
     char command[MAX_CMD_OR_PATH_LEN];
@@ -799,7 +830,9 @@ static void remove_unix_socket_if_stale(chassis *chas)
             /* no matter if it does not exist */
             unlink(chas->unix_socket_name);
         }
+        pclose(p);
     }
+
 }
 
 static int
@@ -831,7 +864,11 @@ check_allowed_running(chassis *chas)
     memset(&un, 0, sizeof(un));
     un.sun_family = AF_UNIX;
     const char *name  = chas->unix_socket_name;
-    strcpy(un.sun_path, name);
+    if (strlen(name) >= sizeof(un.sun_path)) {
+        strncpy(un.sun_path, name, sizeof(un.sun_path) - 1);
+    } else {
+        strncpy(un.sun_path, name, strlen(name));
+    }
     int len = offsetof(struct sockaddr_un, sun_path) + strlen(name);
 
     if (bind(fd, (struct sockaddr *)&un, len) < 0) {
@@ -895,8 +932,13 @@ network_mysqld_admin_plugin_apply_config(chassis *chas,
         return -1;
     }
 
-    cetus_acl_add_rules(chas->priv->acl, ACL_WHITELIST, config->allow_ip);
+    if (config->allow_ip) {
+        cetus_acl_add_rules(chas->priv->acl, ACL_WHITELIST, config->allow_ip);
+    }
 
+    if (config->deny_ip) {
+        cetus_acl_add_rules(chas->priv->acl, ACL_BLACKLIST, config->deny_ip);
+    }
     con = network_mysqld_con_new();
     con->config = config;
     network_mysqld_add_connection(chas, con, TRUE);

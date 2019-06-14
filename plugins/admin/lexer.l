@@ -64,6 +64,7 @@
 "deny_ip" return TK_DENY_IP;
 "conn_details" return TK_CONN_DETAILS;
 "version" return TK_VERSION;
+"refresh_conns" return TK_REFRESH_CONNS;
 "get" return TK_GET;
 "user" return TK_USER;
 "password" return TK_PASSWORD;
@@ -76,6 +77,7 @@
 "master" return TK_MASTER;
 "slave" return TK_SLAVE;
 "maintain" return TK_MAINTAIN;
+"charset_check" return TK_CHARSET_CHECK;
 "status" return TK_STATUS;
 "variables" return TK_VARIABLES;
 "conn_num" return TK_CONN_NUM;

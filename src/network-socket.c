@@ -283,6 +283,18 @@ network_socket_connect_setopts(network_socket *sock)
     if (setsockopt(sock->fd, SOL_SOCKET, SO_KEEPALIVE, &val, sizeof(val)) != 0) {
         g_critical("%s: setsockopt SO_KEEPALIVE failed: %s (%d)", G_STRLOC, g_strerror(errno), errno);
     }
+    val = 30;
+    if (setsockopt(sock->fd, SOL_TCP, TCP_KEEPIDLE, &val, sizeof(val)) != 0) {
+        g_critical("%s: setsockopt TCP_KEEPIDLE failed: %s (%d)", G_STRLOC, g_strerror(errno), errno);
+    }
+    val = 5;
+    if (setsockopt(sock->fd, SOL_TCP, TCP_KEEPINTVL, &val, sizeof(val)) != 0) {
+        g_critical("%s: setsockopt TCP_KEEPINTVL failed: %s (%d)", G_STRLOC, g_strerror(errno), errno);
+    }
+    val = 3;
+    if (setsockopt(sock->fd, SOL_TCP, TCP_KEEPCNT, &val, sizeof(val)) != 0) {
+        g_critical("%s: setsockopt TCP_KEEPCNT failed: %s (%d)", G_STRLOC, g_strerror(errno), errno);
+    }
 
     /* 
      * the listening side may be INADDR_ANY, 
@@ -605,7 +617,7 @@ network_socket_read(network_socket *sock)
     gssize len;
 
     if (sock->to_read > 0) {
-        GString *packet = g_string_sized_new(sock->to_read);
+        GString *packet = g_string_sized_new(calculate_alloc_len(sock->to_read));
 
         g_queue_push_tail(sock->recv_queue_raw->chunks, packet);
 
@@ -682,6 +694,7 @@ network_socket_write_writev(network_socket *con, int send_chunks)
 
     iov = g_new0(struct iovec, chunk_count);
 
+    int aggr_len = 0;
     for (chunk = send_queue->chunks->head, chunk_id = 0;
          chunk && chunk_id < chunk_count; chunk_id++, chunk = chunk->next) {
         GString *s = chunk->data;
@@ -696,6 +709,12 @@ network_socket_write_writev(network_socket *con, int send_chunks)
             iov[chunk_id].iov_len = s->len;
         }
 
+        aggr_len += iov[chunk_id].iov_len;
+        if (aggr_len >= 65536) {
+            chunk_id++;
+            break;
+        }
+
         if (s->len == 0) {
             g_warning("%s: s->len is zero", G_STRLOC);
         }
@@ -704,8 +723,8 @@ network_socket_write_writev(network_socket *con, int send_chunks)
     g_debug("%s: network socket:%p, send (src:%s, dst:%s) fd:%d",
             G_STRLOC, con, con->src->name->str, con->dst->name->str, con->fd);
 
-    len = writev(con->fd, iov, chunk_count);
-    g_debug("%s: tcp write:%d, chunk count:%d", G_STRLOC, (int)len, (int)chunk_count);
+    len = writev(con->fd, iov, chunk_id);
+    g_debug("%s: tcp write:%d, chunk count:%d", G_STRLOC, (int)len, (int)chunk_id);
     os_errno = errno;
 
     g_free(iov);
@@ -721,7 +740,7 @@ network_socket_write_writev(network_socket *con, int send_chunks)
                 /** remote side closed the connection */
             return NETWORK_SOCKET_ERROR;
         default:
-            g_message("%s: writev(%s, ...) failed: %s", G_STRLOC, con->dst->name->str, g_strerror(errno));
+            g_message("%s: writev(%s, ...) failed: %s", G_STRLOC, con->dst->name->str, g_strerror(os_errno));
             return NETWORK_SOCKET_ERROR;
         }
     } else if (len == 0) {

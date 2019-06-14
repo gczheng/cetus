@@ -56,7 +56,7 @@ option(NETWORK_DEBUG_TRACE_EVENT "if NETWORK_DEBUG_TRACE_EVENT is defined, cetus
 option(NETWORK_DEBUG_TRACE_STATE_CHANGES "if NETWORK_DEBUG_TRACE_STATE_CHANGES is defined the state engine for the mysql protocol will log all state changes")
 
 option(USE_GLIB_DEBUG_LOG "g_debug() is default defined to nothing, change to ON if you want to use g_debug()")
-option(WITH_OPENSSL "Compile with OpenSSL" ON)
+option(WITH_OPENSSL "Compile with OpenSSL")
 
 EXECUTE_PROCESS(COMMAND git describe --tags
                 TIMEOUT 5
@@ -65,8 +65,8 @@ EXECUTE_PROCESS(COMMAND git describe --tags
                 )
 MESSAGE(STATUS "building from ${GIT_REVISION}")
 SET(CPACK_PACKAGE_VERSION_MAJOR "2")
-SET(CPACK_PACKAGE_VERSION_MINOR "0")
-SET(CPACK_PACKAGE_VERSION_PATCH "0")
+SET(CPACK_PACKAGE_VERSION_MINOR "3")
+SET(CPACK_PACKAGE_VERSION_PATCH "2")
 SET(CPACK_PACKAGE_VENDOR "MySQL")
 SET(PACKAGE_NAME cetus)
 

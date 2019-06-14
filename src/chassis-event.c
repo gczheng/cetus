@@ -62,9 +62,6 @@ void
 chassis_event_add_with_timeout(chassis *chas, struct event *ev, struct timeval *tv)
 {
     event_base_set(chas->event_base, ev);
-#if NETWORK_DEBUG_TRACE_EVENT
-    CHECK_PENDING_EVENT(ev);
-#endif
     event_add(ev, tv);
     g_debug("%s:event add ev:%p", G_STRLOC, ev);
 }
@@ -108,13 +105,16 @@ chassis_event_loop(chassis_event_loop_t *loop, int *mutex)
             if (cetus_noaccept) {
                 g_message("%s: cetus_noaccept is true", G_STRLOC);
             }
+
+            if (cetus_reap) {
+                g_message("%s: cetus_reap is true", G_STRLOC);
+            }
             break;
         }
 
         struct timeval timeout;
         int r;
 
-        g_debug("%s: enter event_base_loopexit", G_STRLOC);
         timeout.tv_sec = 0;
         timeout.tv_usec = 256000;
 
@@ -124,9 +124,7 @@ chassis_event_loop(chassis_event_loop_t *loop, int *mutex)
             break;
         }
 
-        g_debug("%s: enter event_base_dispatch", G_STRLOC);
         r = event_base_dispatch(loop);
-        g_debug("%s: after event_base_dispatch:%d", G_STRLOC, r);
 
         if (r == -1) {
             g_debug("%s: after event_base_dispatch:%d, errno:%d, str:%s",
@@ -141,7 +139,6 @@ chassis_event_loop(chassis_event_loop_t *loop, int *mutex)
         }
     }
         
-    g_debug("%s: leave chassis_event_loop", G_STRLOC);
 
     return NULL;
 }

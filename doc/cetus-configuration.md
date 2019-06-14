@@ -127,6 +127,10 @@ Default: 127.0.0.1:3306
 
 > proxy-backend-addresses = 10.120.12.12:3306
 
+分表（分库模式下partition-mode=true）
+
+> proxy-backend-addresses = 10.120.12.12:3306
+
 若是分库模式，需要同时指定group
 
 > proxy-backend-addresses = 10.120.12.12:3306@data1
@@ -136,6 +140,10 @@ Default: 127.0.0.1:3306
 `可多项`
 
 只读后端(从库)的IP和端口
+
+> proxy-read-only-backend-addresses = 10.120.12.13:3307
+
+分表（分库模式下partition-mode=true）
 
 > proxy-read-only-backend-addresses = 10.120.12.13:3307
 
@@ -215,11 +223,7 @@ Default: 10485760 (10MB)
 
 ### master-preferred
 
-`可在Admin模块中动态更改`
-
-Proxy在读写分离时可以指定访问的库
-
-参数未设置时，没有限制；设置为true时仅访问读写后端(主库)，除非利用注释强制走从库
+设置为true时仅访问读写后端(主库)，除非利用注释强制走从库
 
 > master-preferred = true
 
@@ -245,16 +249,16 @@ Proxy在读写分离时可以指定访问的库
 
 Default: false
 
-允许客户端使用FOUND_ROWS标志
+允许客户端使用CLIENT_FOUND_ROWS标志
 
 > enable-client-found-rows = true
 
-### worker_id
+### worker-id
 
 只针对分库版本有效
 不同cetus实例的id号必须是不一样，否则容易有冲突
 
-> worker_id = 1
+> worker-id = 1
 
 ## Admin配置
 
@@ -501,9 +505,9 @@ Default: false
 
 ### long-query-time
 
-Default: 65536 (millisecond)
+Default: 1000 (millisecond)
 
-慢查询记录阈值(毫秒)
+慢查询记录阈值(毫秒)，最大65536ms
 
 > long-query-time = 500
 
@@ -521,7 +525,7 @@ Default: false
 
 启用后端传给Cetus的结果集压缩，一般不启用
 
-> enable-back-compress ＝ true
+> enable-back-compress = true
 
 ### merged-output-size
 
@@ -562,6 +566,14 @@ Default: false
 采用tcp stream来输出响应，规避内存炸裂等问题
 
 > enable-tcp-stream = true
+
+### enable-fast-stream
+
+Default(release版本): false
+
+采用fast stream来输出只读响应，提升响应速度，release版本默认为false，开发版本默认为true
+
+> enable-fast-stream = true
 
 ### ssl
 

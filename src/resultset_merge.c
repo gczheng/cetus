@@ -91,7 +91,7 @@ static void
 cetus_result_destroy(cetus_result_t *res)
 {
     if (res->fielddefs) {
-        network_mysqld_proto_fielddefs_free(res->fielddefs);
+        g_ptr_array_free(res->fielddefs, TRUE);
         res->fielddefs = NULL;
     }
 }
@@ -1142,7 +1142,7 @@ modify_record(GList *cand1, group_aggr_t * aggr,
         memcpy(buf_pos, after, (*orig_packet_len) - (after - before));
 
         *orig_packet_len = packet_len;
-        GString *packet = g_string_sized_new(NET_HEADER_SIZE + packet_len);
+        GString *packet = g_string_sized_new(calculate_alloc_len(NET_HEADER_SIZE + packet_len));
         packet->len = NET_HEADER_SIZE;
         g_string_append_len(packet, buffer, packet_len);
         network_mysqld_proto_set_packet_len(packet, packet_len);
@@ -1563,17 +1563,19 @@ cetus_result_parse_fielddefs(cetus_result_t *res_merge, GQueue *input)
 
     network_packet packet = { 0 };
 
-    res_merge->fielddefs = network_mysqld_proto_fielddefs_new();
+    res_merge->fielddefs = g_ptr_array_new_with_free_func((GDestroyNotify)network_mysqld_proto_fielddef_free);
     int i;
     for (i = 0; i < res_merge->field_count; ++i) {
+        /* TODO g_queue_peek_nth is not efficient*/
         packet.data = g_queue_peek_nth(input, i + 1);
         packet.offset = 0;
         network_mysqld_proto_skip_network_header(&packet);
-        network_mysqld_proto_fielddef_t *fdef = network_mysqld_proto_fielddef_new();
+        network_mysqld_proto_fielddef_t *fdef;
+        fdef = network_mysqld_proto_fielddef_new();
         int err = network_mysqld_proto_get_fielddef(&packet, fdef, CLIENT_PROTOCOL_41);
         if (err) {
             network_mysqld_proto_fielddef_free(fdef);
-            network_mysqld_proto_fielddefs_free(res_merge->fielddefs);
+            g_ptr_array_free(res_merge->fielddefs, TRUE);
             res_merge->fielddefs = NULL;
             return FALSE;
         }
@@ -1688,6 +1690,7 @@ fulfill_condi(char *aggr_value, having_condition_t *hav_condi, result_merge_t *m
         result = cmp_str_num(aggr_value, len1, hav_condi->condition_value, len2, &num_unsupported);
         if (num_unsupported) {
             merged_result->status = RM_FAIL;
+            g_warning("%s:merge_failed,num_unsupported", G_STRLOC);
             return FALSE;
         }
 
@@ -1778,6 +1781,7 @@ aggr_by_group(aggr_by_group_para_t *para, GList **candidates, guint *pkt_count, 
 
                 if (merge_failed) {
                     merged_result->status = RM_FAIL;
+                    g_warning("%s:merge_failed", G_STRLOC);
                     return 0;
                 }
 
@@ -1844,11 +1848,8 @@ heap_adjust(heap_type *heap, int s, int m, int *compare_failed)
             if (heap->element[j]->is_over) {
                 j++;
             } else if (!heap->element[j + 1]->is_over) {
-                if (!heap->element[j]->refreshed && !heap->element[j + 1]->refreshed) {
-                    if (!heap->element[j]->is_prior_to) {
-                        j++;
-                    } else {
-                    }
+                if (!heap->element[j]->refreshed && !heap->element[j + 1]->refreshed && heap->element[j]->is_prior_to == -1) {
+                    j++;
                 } else {
                     is_dup = 0;
                     k = j;
@@ -1856,7 +1857,7 @@ heap_adjust(heap_type *heap, int s, int m, int *compare_failed)
                                      heap->element[j + 1]->record->data, &(heap->order_para),
                                      heap->element[j]->index, heap->element[j + 1]->index, &is_dup, compare_failed)) {
                         j++;
-                        heap->element[j]->is_prior_to = 0;
+                        heap->element[j]->is_prior_to = -1;
 
                     } else {
                         if (is_dup) {
@@ -2472,6 +2473,7 @@ merge_for_modify(sql_context_t *context, network_queue *send_queue, GPtrArray *r
         if (!pkt || pkt->len <= NET_HEADER_SIZE) {
             cetus_result_destroy(res_merge);
             merged_result->status = RM_FAIL;
+            g_warning("%s:pkt is wrong", G_STRLOC);
             return 0;
         }
 
@@ -2494,6 +2496,7 @@ merge_for_modify(sql_context_t *context, network_queue *send_queue, GPtrArray *r
             g_queue_remove(recv_q->chunks, pkt);
             cetus_result_destroy(res_merge);
             merged_result->status = RM_FAIL;
+            g_warning("%s:MYSQLD_PACKET_ERR is met", G_STRLOC);
             return 0;
         default:
             break;
@@ -2636,6 +2639,7 @@ check_network_packet_err(network_mysqld_con *con, GList **candidates, GPtrArray 
                 cetus_result_destroy(res_merge);
                 if (con->num_pending_servers) {
                     merged_result->status = RM_FAIL;
+                    g_warning("%s:MYSQLD_PACKET_ERR met, num_pending_servers:%d", G_STRLOC, con->num_pending_servers);
                 } else {
                     merged_result->status = RM_SUCCESS;
                 }
@@ -2644,6 +2648,7 @@ check_network_packet_err(network_mysqld_con *con, GList **candidates, GPtrArray 
         } else {
             cetus_result_destroy(res_merge);
             merged_result->status = RM_FAIL;
+            g_warning("%s:pkt is wrong", G_STRLOC);
             return 0;
         }
     }

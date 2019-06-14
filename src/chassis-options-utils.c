@@ -339,6 +339,19 @@ assign_default_username(const gchar *newval, gpointer param) {
                 g_free(srv->default_username);
             }
             srv->default_username = g_strdup(newval);
+            network_backends_t *bs = srv->priv->backends;
+            gint count = network_backends_count(bs);
+            gint i = 0;
+            for (i = 0; i < count; i++) {
+                network_backend_t *backend = network_backends_get(bs, i);
+                if (backend) {
+                    if (backend->config->default_username) {
+                        g_string_free(backend->config->default_username, TRUE);
+                    }
+                    backend->config->default_username = g_string_new(NULL);
+                    g_string_append(backend->config->default_username, srv->default_username);
+                }
+            }
             ret = ASSIGN_OK;
         } else {
             ret = ASSIGN_VALUE_INVALID;
@@ -375,6 +388,19 @@ assign_default_db(const gchar *newval, gpointer param) {
                 g_free(srv->default_db);
             }
             srv->default_db = g_strdup(newval);
+            network_backends_t *bs = srv->priv->backends;
+            gint count = network_backends_count(bs);
+            gint i = 0;
+            for (i = 0; i < count; i++) {
+                network_backend_t *backend = network_backends_get(bs, i);
+                if (backend) {
+                    if (backend->config->default_db) {
+                        g_string_free(backend->config->default_db, TRUE);
+                    }
+                    backend->config->default_db = g_string_new(NULL);
+                    g_string_append(backend->config->default_db, srv->default_db);
+                }
+            }
             ret = ASSIGN_OK;
         } else {
             ret = ASSIGN_VALUE_INVALID;
@@ -428,7 +454,7 @@ show_default_pool_size(gpointer param) {
         return g_strdup_printf("%d", srv->mid_idle_connections);
     }
     if (CAN_SAVE_OPTS_PROPERTY(opt_type)) {
-        if (srv->mid_idle_connections == 100) {
+        if (srv->mid_idle_connections == DEFAULT_POOL_SIZE) {
             return NULL;
         }
         return g_strdup_printf("%d", srv->mid_idle_connections);
@@ -447,8 +473,8 @@ assign_default_pool_size(const gchar *newval, gpointer param) {
             gint value = 0;
                 if (try_get_int_value(newval, &value)) {
                     if (value >= 0) {
-                        if (value < 10) {
-                            value = 10;
+                        if (value < DEFAULT_POOL_SIZE) {
+                            value = DEFAULT_POOL_SIZE;
                         }
                         srv->mid_idle_connections = value;
 
@@ -1008,6 +1034,23 @@ show_default_client_idle_timeout(gpointer param) {
     return NULL;
 }
 
+gchar*
+show_default_incomplete_tran_idle_timeout(gpointer param) {
+    struct external_param *opt_param = (struct external_param *)param;
+    chassis *srv = opt_param->chas;
+    gint opt_type = opt_param->opt_type;
+    if (CAN_SHOW_OPTS_PROPERTY(opt_type)) {
+        return g_strdup_printf("%d (s)", srv->incomplete_tran_idle_timeout);
+    }
+    if (CAN_SAVE_OPTS_PROPERTY(opt_type)) {
+        if (srv->incomplete_tran_idle_timeout == 3600) {
+            return NULL;
+        }
+        return g_strdup_printf("%d", srv->incomplete_tran_idle_timeout);
+    }
+    return NULL;
+}
+
 gint
 assign_default_client_idle_timeout(const gchar *newval, gpointer param) {
     gint ret = ASSIGN_ERROR;
@@ -1033,6 +1076,33 @@ assign_default_client_idle_timeout(const gchar *newval, gpointer param) {
     }
     return ret;
 }
+
+gint
+assign_default_incomplete_tran_idle_timeout(const gchar *newval, gpointer param) {
+    gint ret = ASSIGN_ERROR;
+    struct external_param *opt_param = (struct external_param *)param;
+    chassis *srv = opt_param->chas;
+    gint opt_type = opt_param->opt_type;
+    if (CAN_ASSIGN_OPTS_PROPERTY(opt_type)) {
+        if (NULL != newval) {
+            int value = 0;
+            if (try_get_int_value(newval, &value)) {
+                if (value >= 0) {
+                    srv->incomplete_tran_idle_timeout = value;
+                    ret = ASSIGN_OK;
+                } else {
+                    ret = ASSIGN_VALUE_INVALID;
+                }
+            } else {
+                ret = ASSIGN_VALUE_INVALID;
+            }
+        } else {
+            ret = ASSIGN_VALUE_INVALID;
+        }
+    }
+    return ret;
+}
+
 
 gchar* show_long_query_time(gpointer param) {
     struct external_param *opt_param = (struct external_param *)param;
@@ -1119,6 +1189,49 @@ show_enable_query_cache(gpointer param) {
 }
 
 gchar*
+show_enable_fast_stream(gpointer param) {
+    struct external_param *opt_param = (struct external_param *)param;
+    chassis *srv = opt_param->chas;
+    gint opt_type = opt_param->opt_type;
+    if (CAN_SHOW_OPTS_PROPERTY(opt_type)) {
+        return g_strdup_printf("%s", srv->is_fast_stream_enabled ? "true" : "false");
+    }
+    if (CAN_SAVE_OPTS_PROPERTY(opt_type)) {
+        return srv->is_fast_stream_enabled ? g_strdup("true") : g_strdup("false");
+    }
+    return NULL;
+}
+
+gchar*
+show_enable_partition(gpointer param) {
+    struct external_param *opt_param = (struct external_param *)param;
+    chassis *srv = opt_param->chas;
+    gint opt_type = opt_param->opt_type;
+    if (CAN_SHOW_OPTS_PROPERTY(opt_type)) {
+        return g_strdup_printf("%s", srv->is_partition_mode ? "true" : "false");
+    }
+    if (CAN_SAVE_OPTS_PROPERTY(opt_type)) {
+        return srv->is_partition_mode ? g_strdup("true") : NULL;
+    }
+    return NULL;
+}
+
+gchar*
+show_enable_sql_special_processed(gpointer param) {
+    struct external_param *opt_param = (struct external_param *)param;
+    chassis *srv = opt_param->chas;
+    gint opt_type = opt_param->opt_type;
+    if (CAN_SHOW_OPTS_PROPERTY(opt_type)) {
+        return g_strdup_printf("%s", srv->is_sql_special_processed ? "true" : "false");
+    }
+    if (CAN_SAVE_OPTS_PROPERTY(opt_type)) {
+        return srv->is_sql_special_processed ? g_strdup("true") : NULL;
+    }
+    return NULL;
+}
+
+
+gchar*
 show_enable_tcp_stream(gpointer param) {
     struct external_param *opt_param = (struct external_param *)param;
     chassis *srv = opt_param->chas;
@@ -1127,7 +1240,7 @@ show_enable_tcp_stream(gpointer param) {
         return g_strdup_printf("%s", srv->is_tcp_stream_enabled ? "true" : "false");
     }
     if (CAN_SAVE_OPTS_PROPERTY(opt_type)) {
-        return srv->is_tcp_stream_enabled ? g_strdup("true") : NULL;
+        return srv->is_tcp_stream_enabled ? g_strdup("true") : g_strdup("false");
     }
     return NULL;
 }
@@ -1227,6 +1340,18 @@ show_remote_conf_url(gpointer param) {
     }
     return NULL;
 }
+
+gchar*
+show_trx_isolation_level(gpointer param) {
+    struct external_param *opt_param = (struct external_param *)param;
+    chassis *srv = opt_param->chas;
+    gint opt_type = opt_param->opt_type;
+    if (CAN_SHOW_OPTS_PROPERTY(opt_type)) {
+        return g_strdup_printf("%s", srv->trx_isolation_level != NULL ? srv->trx_isolation_level: "NULL");
+    }
+    return NULL;
+}
+
 
 gchar*
 show_group_replication_mode(gpointer param) {
